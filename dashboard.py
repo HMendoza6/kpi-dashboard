@@ -18,7 +18,7 @@ st.set_page_config(
 @st.cache_data
 def load_data():
     df = pd.read_excel(
-        r"C:\Users\HMendoza\Documents\Verwaltung\2026\KPIs\KPI-LS\Liste_Aufgabe 2026 fuer KPis.xlsx",
+        "Liste_Aufgabe 2026 fuer KPis.xlsx",
         sheet_name="2026",
         header=0  # Zeile 0 = Spaltennamen
     )
