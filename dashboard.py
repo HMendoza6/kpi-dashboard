@@ -15,7 +15,6 @@ st.set_page_config(
 # ─────────────────────────────────────────────
 # 📁 DATEN LADEN
 # ─────────────────────────────────────────────
-@st.cache_data
 def load_data():
     df = pd.read_excel(
         "Liste_Aufgabe 2026 fuer KPis.xlsx",
