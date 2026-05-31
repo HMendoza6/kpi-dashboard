@@ -209,7 +209,7 @@ st.markdown("---")
 # ─────────────────────────────────────────────
 st.subheader("💾 Bericht exportieren")
 
-@st.cache_data
+def load_data():
 def convert_df(df):
     return df.to_csv(index=False).encode("utf-8")
 
