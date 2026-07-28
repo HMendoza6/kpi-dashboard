@@ -54,8 +54,55 @@ def load_data_2025():
     })
     return df
 
-df_2026 = load_data_2026()
-df_2025 = load_data_2025()
+# ─────────────────────────────────────────────
+# 📁 DATEN LADEN KOSTEN 2025
+# ─────────────────────────────────────────────
+# NEU ✅
+def load_kosten_2025():
+    df = pd.read_excel(
+        "Ueberblick_LS.xlsx",
+        sheet_name="2025",
+        header=0
+    )
+    df.columns = df.columns.str.strip()
+    # Leere Zeilen entfernen
+    df = df.dropna(subset=["Datum"])
+    df = df[df["Datum"].astype(str).str.strip() != ""]
+    df["Datum"] = pd.to_datetime(df["Datum"], errors="coerce")
+    df = df.dropna(subset=["Datum"])
+    df["Monat"] = df["Datum"].dt.strftime("%Y-%m")
+    df["Jahr"]  = "2025"
+    sprachen_2025 = ["EN", "IT", "ES", "NL", "PL", "PT", "CZ", "SL"]
+    for s in sprachen_2025:
+        if s in df.columns:
+            df[s] = pd.to_numeric(df[s], errors="coerce").fillna(0)
+    return df
+
+# ─────────────────────────────────────────────
+# 📁 DATEN LADEN KOSTEN 2026
+# ─────────────────────────────────────────────
+def load_kosten_2026():
+    df = pd.read_excel(
+        "Ueberblick_LS.xlsx",
+        sheet_name="2026",
+        header=0
+    )
+    df.columns = df.columns.str.strip()
+    df["Datum"] = pd.to_datetime(df["Datum"], errors="coerce")
+    df["Monat"] = df["Datum"].dt.strftime("%Y-%m")
+    df["Jahr"]  = "2026"
+    df = df.rename(columns={"Bereich": "Abteilung"})
+    sprachen_2026 = ["EN", "IT", "ES", "NL", "PL", "PT", "CZ", "SL",
+                     "SV", "FI", "NW", "DA", "GR"]
+    for s in sprachen_2026:
+        if s in df.columns:
+            df[s] = pd.to_numeric(df[s], errors="coerce").fillna(0)
+    return df
+
+df_2026     = load_data_2026()
+df_2025     = load_data_2025()
+kosten_2025 = load_kosten_2025()
+kosten_2026 = load_kosten_2026()
 
 # ─────────────────────────────────────────────
 # 🎛️ SEITENLEISTE – NAVIGATION
@@ -64,7 +111,11 @@ st.sidebar.title("🎛️ Navigation")
 
 seite = st.sidebar.radio(
     "Seite auswählen:",
-    ["📊 KPI Dashboard 2026", "📈 Jahresvergleich 2025 vs 2026"]
+    [
+        "📊 KPI Dashboard 2026",
+        "📈 Jahresvergleich 2025 vs 2026",
+        "💰 Kosten Übersicht"
+    ]
 )
 
 st.sidebar.markdown("---")
@@ -74,7 +125,6 @@ st.sidebar.markdown("---")
 # ─────────────────────────────────────────────
 if seite == "📊 KPI Dashboard 2026":
 
-    # Filter
     st.sidebar.title("🎛️ Filter")
 
     abteilungen = ["Alle"] + sorted(df_2026["Abteilung"].dropna().unique().tolist())
@@ -92,7 +142,6 @@ if seite == "📊 KPI Dashboard 2026":
         max_value=max_datum
     )
 
-    # Filter anwenden
     df_filtered = df_2026.copy()
 
     if abt_filter != "Alle":
@@ -107,7 +156,6 @@ if seite == "📊 KPI Dashboard 2026":
             (df_filtered["Eingang"].dt.date <= datum_range[1])
         ]
 
-    # KPIs berechnen
     total_auftraege      = len(df_filtered)
     puenktlich           = df_filtered["Eingehalten?"].str.lower() == "ja"
     puenktlichkeitsrate  = puenktlich.sum() / total_auftraege * 100 if total_auftraege > 0 else 0
@@ -122,13 +170,11 @@ if seite == "📊 KPI Dashboard 2026":
         df_filtered["Lieferdatum"] - df_filtered["Eingang"]
     ).dt.total_seconds() / 3600
 
-    # Titel
     st.title("📊 KPI Dashboard – TCO-Language Services")
     stand = datetime.today().strftime("%d.%m.%Y")
     st.markdown(f"📅 **Stand: {stand}**")
     st.markdown("---")
 
-    # KPI Karten
     k1, k2, k3, k4, k5 = st.columns(5)
     k1.metric("📦 Aufträge gesamt",        total_auftraege)
     k2.metric("✅ Pünktlichkeitsrate",     f"{puenktlichkeitsrate:.1f}%")
@@ -138,7 +184,6 @@ if seite == "📊 KPI Dashboard 2026":
 
     st.markdown("---")
 
-    # Diagramme Zeile 2
     col1, col2 = st.columns(2)
 
     with col1:
@@ -161,7 +206,6 @@ if seite == "📊 KPI Dashboard 2026":
                       color_discrete_sequence=["#56C596"])
         st.plotly_chart(fig2, use_container_width=True)
 
-    # Diagramme Zeile 3
     col3, col4 = st.columns(2)
 
     with col3:
@@ -188,7 +232,6 @@ if seite == "📊 KPI Dashboard 2026":
 
     st.markdown("---")
 
-    # Aufträge pro Sprache
     st.subheader("🌍 Anzahl Aufträge pro Sprache")
     auftraege_sprache = df_filtered.groupby("Sprache").agg(
         Aufträge = ("Auftragsname", "count")
@@ -199,13 +242,11 @@ if seite == "📊 KPI Dashboard 2026":
 
     st.markdown("---")
 
-    # Rohdaten
     st.subheader("📋 Rohdaten 2026")
     st.dataframe(df_filtered, use_container_width=True)
 
     st.markdown("---")
 
-    # Export
     st.subheader("💾 Bericht exportieren")
 
     def convert_df(df):
@@ -229,7 +270,6 @@ elif seite == "📈 Jahresvergleich 2025 vs 2026":
     st.markdown(f"📅 **Stand: {stand}**")
     st.markdown("---")
 
-    # Aufträge gesamt Vergleich
     total_2025 = len(df_2025)
     total_2026 = len(df_2026)
 
@@ -240,7 +280,6 @@ elif seite == "📈 Jahresvergleich 2025 vs 2026":
 
     st.markdown("---")
 
-    # Sprachen Vergleich
     col5, col6 = st.columns(2)
 
     with col5:
@@ -263,7 +302,6 @@ elif seite == "📈 Jahresvergleich 2025 vs 2026":
 
     st.markdown("---")
 
-    # Abteilungen Vergleich
     col7, col8 = st.columns(2)
 
     with col7:
@@ -286,7 +324,6 @@ elif seite == "📈 Jahresvergleich 2025 vs 2026":
 
     st.markdown("---")
 
-    # Monatsvergleich
     st.subheader("📅 Aufträge pro Monat – 2025 vs 2026")
 
     monat_2025 = df_2025.groupby("Monat")["Auftragsname"].count().reset_index()
@@ -305,3 +342,111 @@ elif seite == "📈 Jahresvergleich 2025 vs 2026":
                    title="Aufträge pro Monat 2025 vs 2026",
                    color_discrete_sequence=["#F4A261", "#4C9BE8"])
     st.plotly_chart(fig10, use_container_width=True)
+
+# ─────────────────────────────────────────────
+# 💰 SEITE 3 – KOSTEN ÜBERSICHT
+# ─────────────────────────────────────────────
+elif seite == "💰 Kosten Übersicht":
+
+    st.title("💰 Kosten Übersicht – TCO-Language Services")
+    stand = datetime.today().strftime("%d.%m.%Y")
+    st.markdown(f"📅 **Stand: {stand}**")
+    st.markdown("---")
+
+    jahr_filter = st.sidebar.radio("Jahr", ["2026", "2025", "2025 vs 2026"])
+    st.sidebar.markdown("---")
+
+    if jahr_filter == "2026":
+        kosten_df = kosten_2026.copy()
+        sprachen  = ["EN", "IT", "ES", "NL", "PL", "PT", "CZ", "SL",
+                     "SV", "FI", "NW", "DA", "GR"]
+    elif jahr_filter == "2025":
+        kosten_df = kosten_2025.copy()
+        sprachen  = ["EN", "IT", "ES", "NL", "PL", "PT", "CZ", "SL"]
+    else:
+        kosten_2025_copy = kosten_2025.copy()
+        kosten_2026_copy = kosten_2026.copy()
+        kosten_df = pd.concat([kosten_2025_copy, kosten_2026_copy])
+        sprachen  = ["EN", "IT", "ES", "NL", "PL", "PT", "CZ", "SL"]
+
+    sprachen = [s for s in sprachen if s in kosten_df.columns]
+
+    # ── Gesamtkosten KPI ──
+    kosten_df["Gesamt"] = kosten_df[sprachen].sum(axis=1)
+    gesamtkosten = kosten_df["Gesamt"].sum()
+
+    st.metric("💰 Gesamtkosten", f"{gesamtkosten:,.2f} €")
+
+    st.markdown("---")
+
+    # ── Kosten pro Sprache ──
+    st.subheader(f"🌍 Kosten pro Sprache – {jahr_filter}")
+
+    kosten_sprache = kosten_df[sprachen].sum().reset_index()
+    kosten_sprache.columns = ["Sprache", "Kosten (€)"]
+    kosten_sprache = kosten_sprache[kosten_sprache["Kosten (€)"] > 0]
+    kosten_sprache = kosten_sprache.sort_values("Kosten (€)", ascending=False)
+
+    fig11 = px.bar(kosten_sprache, x="Sprache", y="Kosten (€)",
+                   color="Sprache",
+                   title=f"Kosten pro Sprache – {jahr_filter}")
+    st.plotly_chart(fig11, use_container_width=True)
+
+    st.markdown("---")
+
+    # ── Kosten pro Abteilung ──
+    st.subheader(f"🏢 Kosten pro Abteilung – {jahr_filter}")
+
+    kosten_abt = kosten_df.groupby("Abteilung")["Gesamt"].sum().reset_index()
+    kosten_abt.columns = ["Abteilung", "Kosten (€)"]
+    kosten_abt = kosten_abt[kosten_abt["Kosten (€)"] > 0]
+    kosten_abt = kosten_abt.sort_values("Kosten (€)", ascending=False)
+
+    fig12 = px.bar(kosten_abt, x="Abteilung", y="Kosten (€)",
+                   color_discrete_sequence=["#56C596"],
+                   title=f"Kosten pro Abteilung – {jahr_filter}")
+    st.plotly_chart(fig12, use_container_width=True)
+
+    st.markdown("---")
+
+    # ── Kosten pro Monat ──
+    st.subheader(f"📅 Kosten pro Monat – {jahr_filter}")
+
+    kosten_monat = kosten_df.groupby(["Monat", "Jahr"])["Gesamt"].sum().reset_index()
+    kosten_monat.columns = ["Monat", "Jahr", "Kosten (€)"]
+    kosten_monat["Monat_kurz"] = kosten_monat["Monat"].str[-2:]
+    kosten_monat = kosten_monat.sort_values("Monat")
+
+    if jahr_filter == "2025 vs 2026":
+        fig13 = px.bar(kosten_monat, x="Monat_kurz", y="Kosten (€)",
+                       color="Jahr", barmode="group",
+                       title="Kosten pro Monat 2025 vs 2026",
+                       color_discrete_sequence=["#F4A261", "#4C9BE8"])
+    else:
+        fig13 = px.bar(kosten_monat, x="Monat_kurz", y="Kosten (€)",
+                       color_discrete_sequence=["#4C9BE8"],
+                       title=f"Kosten pro Monat – {jahr_filter}")
+
+    fig13.update_xaxes(type="category")
+    st.plotly_chart(fig13, use_container_width=True)
+
+    st.markdown("---")
+
+    # ── Kosten pro Übersetzer ──
+    st.subheader(f"👤 Kosten pro Übersetzer – {jahr_filter}")
+
+    kosten_uebersetzer = kosten_df.groupby("Übersetzer")["Gesamt"].sum().reset_index()
+    kosten_uebersetzer.columns = ["Übersetzer", "Kosten (€)"]
+    kosten_uebersetzer = kosten_uebersetzer[kosten_uebersetzer["Kosten (€)"] > 0]
+    kosten_uebersetzer = kosten_uebersetzer.sort_values("Kosten (€)", ascending=False)
+
+    fig14 = px.bar(kosten_uebersetzer, x="Übersetzer", y="Kosten (€)",
+                   color="Übersetzer",
+                   title=f"Kosten pro Übersetzer – {jahr_filter}")
+    st.plotly_chart(fig14, use_container_width=True)
+
+    st.markdown("---")
+
+    # ── Rohdaten ──
+    st.subheader("📋 Rohdaten Kosten")
+    st.dataframe(kosten_df, use_container_width=True)
