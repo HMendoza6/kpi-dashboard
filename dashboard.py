@@ -148,6 +148,9 @@ def normalize_orders(df: pd.DataFrame, year: str) -> pd.DataFrame:
     ]:
         if column in df.columns:
             df[column] = df[column].astype("string").str.strip()
+            if column == "Kanal":
+                numeric_channel = df[column].notna() & df[column].str.fullmatch(r"\d+")
+                df.loc[numeric_channel, column] = "jazz"
 
     # Fehlende Dringlichkeitsangaben bleiben unbekannt und werden nicht zu 0.
     if "Dringend" in df.columns:
@@ -320,6 +323,7 @@ seite = st.sidebar.radio(
         "📊 KPI Dashboard 2026",
         "📈 Jahresvergleich 2025 vs 2026",
         "💰 Kosten Übersicht",
+        "📘 KPI-Methodik & Anleitung",
     ],
 )
 
@@ -431,10 +435,26 @@ if seite == "📊 KPI Dashboard 2026":
     k6.metric("Noch nicht geliefert", format_number(offene_auftraege))
 
     s1, s2, s3, s4 = st.columns(4)
-    s1.metric("Konkrete Deadline", format_number(deadline_konkret.sum()))
-    s2.metric("Termintreue bewertet", format_number(fristbewertbar.sum()))
-    s3.metric("Fristgerecht", format_number(fristgerecht[fristbewertbar].sum()))
-    s4.metric("Nicht bewertbar", format_number((~fristbewertbar).sum()))
+    s1.metric(
+        "Konkrete Deadline",
+        format_number(deadline_konkret.sum()),
+        help="Aufträge mit einem konkreten Kalenderdatum als Deadline."
+    )
+    s2.metric(
+        "Termintreue bewertet",
+        format_number(fristbewertbar.sum()),
+        help="Gelieferte Aufträge mit konkreter Deadline. Diese Aufträge bilden den Nenner der Termintreue."
+    )
+    s3.metric(
+        "Fristgerecht",
+        format_number(fristgerecht[fristbewertbar].sum()),
+        help="Bewertete Aufträge, die am oder vor der Deadline geliefert wurden."
+    )
+    s4.metric(
+        "Nicht bewertbar",
+        format_number((~fristbewertbar).sum()),
+        help="Aufträge ohne konkrete Deadline, mit ASAP oder noch nicht gelieferte Aufträge."
+    )
 
     st.markdown("---")
     st.info(
@@ -442,6 +462,42 @@ if seite == "📊 KPI Dashboard 2026":
         "für gelieferte Aufträge mit konkreter Deadline berechnet. Leere Deadlines "
         "und ASAP bleiben in der Gesamtzahl, sind aber nicht bewertbar."
     )
+
+    with st.expander("Wie werden Termintreue und Fristgerecht berechnet?", expanded=False):
+        st.markdown(
+            "**Termintreue bewertet** = gelieferte Aufträge mit einer konkreten Deadline. "
+            "Diese Zahl ist der Nenner für die Termintreue.\n\n"
+            "**Fristgerecht** = bewertete Aufträge, die am oder vor der Deadline geliefert wurden.\n\n"
+            "**Verspätet** = bewertete Aufträge, die nach der Deadline geliefert wurden.\n\n"
+            "**Nicht bewertbar** = Aufträge ohne Deadline, mit `ASAP` oder noch nicht gelieferte Aufträge."
+        )
+        flow = pd.DataFrame(
+            {
+                "Stufe": [
+                    "Aufträge gesamt",
+                    "Termintreue bewertet",
+                    "Fristgerecht",
+                    "Verspätet",
+                ],
+                "Anzahl": [
+                    total_auftraege,
+                    int(fristbewertbar.sum()),
+                    int(fristgerecht[fristbewertbar].sum()),
+                    int(verspätet.sum()),
+                ],
+                "Erklärung": [
+                    "Alle Aufträge im aktuellen Filter",
+                    "Geliefert + konkrete Deadline",
+                    "Lieferdatum <= Deadline",
+                    "Lieferdatum > Deadline",
+                ],
+            }
+        )
+        st.dataframe(flow, use_container_width=True, hide_index=True)
+        st.caption(
+            "Termintreue = Fristgerecht / Termintreue bewertet. "
+            "Aufträge ohne Deadline und ASAP werden nicht in diese Quote einbezogen."
+        )
 
     col1, col2 = st.columns(2)
 
@@ -466,46 +522,63 @@ if seite == "📊 KPI Dashboard 2026":
         st.plotly_chart(fig, use_container_width=True)
 
     with col2:
-        st.subheader("Aufträge pro Abteilung")
+        st.subheader("Anzahl Aufträge pro Abteilung")
+        department_values = (
+            df_filtered["Abteilung_Anzeige"]
+            .astype("string")
+            .str.strip()
+            .fillna("Nicht zugeordnet")
+            .replace("", "Nicht zugeordnet")
+        )
         by_department = (
-            df_filtered.groupby("Abteilung_Anzeige", dropna=False)
-            .size()
-            .rename("Anzahl")
-            .reset_index()
+            department_values.value_counts(dropna=False)
+            .rename_axis("Abteilung")
+            .reset_index(name="Anzahl")
             .sort_values("Anzahl", ascending=True)
         )
         fig = px.bar(
             by_department,
             x="Anzahl",
-            y="Abteilung_Anzeige",
+            y="Abteilung",
+            text="Anzahl",
             orientation="h",
-            labels={"Abteilung_Anzeige": "Abteilung", "Anzahl": "Aufträge"},
+            labels={"Abteilung": "Abteilung", "Anzahl": "Aufträge"},
             color_discrete_sequence=["#70AD47"],
+            hover_data={"Anzahl": ":,d"},
         )
-        fig.update_layout(showlegend=False)
+        fig.update_traces(textposition="outside")
+        fig.update_layout(showlegend=False, yaxis_type="category")
         st.plotly_chart(fig, use_container_width=True)
 
     col3, col4 = st.columns(2)
 
     with col3:
-        st.subheader("Aufträge pro Kanal")
+        st.subheader("Anzahl Aufträge pro Kanal")
+        channel_values = (
+            df_filtered["Kanal"]
+            .astype("string")
+            .str.strip()
+            .fillna("Nicht angegeben")
+            .replace("", "Nicht angegeben")
+        )
         by_channel = (
-            df_filtered.groupby("Kanal", dropna=False)
-            .size()
-            .rename("Anzahl")
-            .reset_index()
+            channel_values.value_counts(dropna=False)
+            .rename_axis("Kanal")
+            .reset_index(name="Anzahl")
             .sort_values("Anzahl", ascending=True)
         )
-        by_channel["Kanal"] = by_channel["Kanal"].fillna("Unbekannt")
         fig = px.bar(
             by_channel,
             x="Anzahl",
             y="Kanal",
+            text="Anzahl",
             orientation="h",
             labels={"Kanal": "Kanal", "Anzahl": "Aufträge"},
             color_discrete_sequence=["#ED7D31"],
+            hover_data={"Anzahl": ":,d"},
         )
-        fig.update_layout(showlegend=False)
+        fig.update_traces(textposition="outside")
+        fig.update_layout(showlegend=False, yaxis_type="category")
         st.plotly_chart(fig, use_container_width=True)
 
     with col4:
@@ -822,6 +895,119 @@ elif seite == "📈 Jahresvergleich 2025 vs 2026":
             color_discrete_sequence=["#ED7D31", "#4472C4"],
         )
         st.plotly_chart(fig, use_container_width=True)
+
+
+# ============================================================
+# SEITE 4: KPI-METHODIK & ANLEITUNG
+# ============================================================
+elif seite == "📘 KPI-Methodik & Anleitung":
+    st.title("KPI-Methodik & Anleitung")
+    st.caption("Was messen wir, warum messen wir es und wie sind die Kennzahlen zu lesen?")
+
+    st.info(
+        "Die KPIs beschreiben den Auftragsprozess und unterstützen die Planung. "
+        "Sie sind nicht als isolierte Bewertung einzelner Personen gedacht."
+    )
+
+    st.subheader("Was messen wir?")
+    methodik = pd.DataFrame(
+        {
+            "Bereich": [
+                "Auftragsvolumen",
+                "Verteilung",
+                "Termintreue",
+                "Deadlines",
+                "Durchlaufzeit",
+                "Offene Arbeit",
+                "Datenqualität",
+                "Kosten",
+            ],
+            "KPIs im Dashboard": [
+                "Aufträge gesamt, pro Monat, Kanal und Abteilung",
+                "Aufträge nach Kanal, Abteilung und Zielsprache",
+                "Termintreue, fristgerecht, verspätet",
+                "Konkrete Deadline, keine Deadline, ASAP",
+                "Median und P90 der Durchlaufzeit",
+                "Noch nicht geliefert",
+                "Fehlende Deadlines, Lieferdaten und Zuordnungen",
+                "Kosten nach Sprache, Abteilung und Monat",
+            ],
+            "Wofür?": [
+                "Arbeitsvolumen und Entwicklung erkennen",
+                "Schwerpunkte und Belastungen sichtbar machen",
+                "Vereinbarte Termine nachvollziehbar prüfen",
+                "Bewertbarkeit der Termintreue einschätzen",
+                "Typische Dauer und Ausreißer erkennen",
+                "Rückstände frühzeitig erkennen",
+                "Aussagekraft der Auswertung beurteilen",
+                "Aufwendungen und Entwicklungen beobachten",
+            ],
+        }
+    )
+    st.dataframe(methodik, use_container_width=True, hide_index=True)
+
+    st.subheader("Wie wird die Termintreue berechnet?")
+    st.markdown(
+        "**Termintreue bewertet** sind gelieferte Aufträge mit einer konkreten Kalender-Deadline. "
+        "Diese Zahl ist der Nenner.\n\n"
+        "**Fristgerecht** sind bewertete Aufträge, die am oder vor der Deadline geliefert wurden.\n\n"
+        "**Verspätet** sind bewertete Aufträge, die nach der Deadline geliefert wurden."
+    )
+    formula = pd.DataFrame(
+        {
+            "Kennzahl": ["Termintreue", "Termintreue bewertet", "Fristgerecht", "Nicht bewertbar"],
+            "Definition": [
+                "Fristgerecht / Termintreue bewertet",
+                "Geliefert + konkrete Deadline",
+                "Lieferdatum <= Deadline",
+                "Keine Deadline, ASAP oder noch nicht geliefert",
+            ],
+        }
+    )
+    st.dataframe(formula, use_container_width=True, hide_index=True)
+
+    st.subheader("Was erhoffen wir uns von den KPIs?")
+    st.markdown(
+        "- Arbeitsvolumen und Verteilung transparent machen\n"
+        "- Engpässe und Rückstände früh erkennen\n"
+        "- Kapazitäten und Ressourcen besser planen\n"
+        "- Wiederkehrende Verzögerungen erkennen\n"
+        "- Datenqualität und Prozessqualität verbessern\n"
+        "- Gespräche mit Auftraggebern faktenbasiert führen\n"
+        "- Verbesserungen im Prozess messbar machen"
+    )
+
+    st.subheader("Was sagen die KPIs nicht automatisch aus?")
+    st.warning(
+        "Eine verspätete Lieferung ist nicht automatisch ein Fehler des Übersetzungsteams. "
+        "Deadlines können unrealistisch oder sehr kurzfristig sein. Vergleiche zwischen "
+        "Abteilungen sind nur sinnvoll, wenn Auftragsarten und Rahmenbedingungen ähnlich sind."
+    )
+
+    st.subheader("Regeln für Deadlines")
+    deadline_rules = pd.DataFrame(
+        {
+            "Situation": [
+                "Konkrete Deadline vorhanden",
+                "ASAP ausdrücklich vereinbart",
+                "Keine Deadline vereinbart",
+                "Deadline später bekannt geworden",
+            ],
+            "Eintrag": [
+                "Datum eintragen",
+                "ASAP eintragen",
+                "Feld leer lassen",
+                "Datum nachtragen",
+            ],
+            "Auswertung": [
+                "Termintreue bewertbar, sobald geliefert",
+                "Nicht als konkretes Datum bewerten",
+                "In Gesamtzahl enthalten, nicht bewertbar",
+                "Nach Aktualisierung regulär bewerten",
+            ],
+        }
+    )
+    st.dataframe(deadline_rules, use_container_width=True, hide_index=True)
 
 
 # ============================================================
