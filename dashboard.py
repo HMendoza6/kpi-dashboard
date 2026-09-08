@@ -149,7 +149,14 @@ def normalize_orders(df: pd.DataFrame, year: str) -> pd.DataFrame:
         if column in df.columns:
             df[column] = df[column].astype("string").str.strip()
             if column == "Kanal":
-                numeric_channel = df[column].notna() & df[column].str.fullmatch(r"\d+")
+                # Kanalwerte, die nur aus Zahlen bestehen, gehören zu jazz.
+                # Die Prüfung funktioniert auch dann, wenn pandas den Wert
+                # zunächst als Zahl oder als Dezimalzahl eingelesen hat.
+                numeric_channel = (
+                    df[column].notna()
+                    & df[column].ne("")
+                    & pd.to_numeric(df[column], errors="coerce").notna()
+                )
                 df.loc[numeric_channel, column] = "jazz"
 
     # Fehlende Dringlichkeitsangaben bleiben unbekannt und werden nicht zu 0.
@@ -536,6 +543,8 @@ if seite == "📊 KPI Dashboard 2026":
             .reset_index(name="Anzahl")
             .sort_values("Anzahl", ascending=True)
         )
+        by_department["Abteilung"] = by_department["Abteilung"].astype("string")
+        by_department["Anzahl"] = pd.to_numeric(by_department["Anzahl"], errors="coerce").astype(int)
         fig = px.bar(
             by_department,
             x="Anzahl",
@@ -567,6 +576,8 @@ if seite == "📊 KPI Dashboard 2026":
             .reset_index(name="Anzahl")
             .sort_values("Anzahl", ascending=True)
         )
+        by_channel["Kanal"] = by_channel["Kanal"].astype("string")
+        by_channel["Anzahl"] = pd.to_numeric(by_channel["Anzahl"], errors="coerce").astype(int)
         fig = px.bar(
             by_channel,
             x="Anzahl",
