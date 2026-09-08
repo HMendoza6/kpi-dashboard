@@ -17,7 +17,7 @@ st.set_page_config(
 )
 
 BASE_DIR = Path(__file__).resolve().parent
-FILE_2026 = BASE_DIR / "Liste_Aufgabe 2026 fuer KPis.xlsx"
+FILE_2026 = BASE_DIR / "Liste_Aufgabe Doku_UeM_NEU-2026(2026).csv"
 FILE_2025 = BASE_DIR / "Liste_Aufgabe 2025 fuer KPis.xlsx"
 FILE_COSTS = BASE_DIR / "Ueberblick_LS.xlsx"
 
@@ -227,7 +227,11 @@ def normalize_orders(df: pd.DataFrame, year: str) -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def load_orders_2026() -> pd.DataFrame:
-    df = pd.read_excel(FILE_2026, sheet_name="2026", header=0)
+    # Die korrigierte 2026-Quelle ist eine CP1252-CSV-Datei.
+    df = pd.read_csv(FILE_2026, encoding="cp1252")
+    df = clean_columns(df)
+    # Vollständig leere Zeilen sind keine Aufträge und werden nicht gezählt.
+    df = df.dropna(how="all").copy()
     return normalize_orders(df, "2026")
 
 
