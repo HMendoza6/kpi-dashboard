@@ -1,452 +1,944 @@
-import streamlit as st
-import pandas as pd
-import plotly.express as px
+from pathlib import Path
 from datetime import datetime
 
-# ─────────────────────────────────────────────
-# ⚙️ SEITEN-KONFIGURATION
-# ─────────────────────────────────────────────
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import streamlit as st
+
+
+# ============================================================
+# KONFIGURATION
+# ============================================================
 st.set_page_config(
-    page_title="KPI Dashboard – Language Services",
+    page_title="KPI Dashboard - Language Services",
     page_icon="📊",
-    layout="wide"
+    layout="wide",
 )
 
-# ─────────────────────────────────────────────
-# 📁 DATEN LADEN 2026
-# ─────────────────────────────────────────────
-def load_data_2026():
-    df = pd.read_excel(
-        "Liste_Aufgabe 2026 fuer KPis.xlsx",
-        sheet_name="2026",
-        header=0
+BASE_DIR = Path(__file__).resolve().parent
+FILE_2026 = BASE_DIR / "Liste_Aufgabe 2026 fuer KPis.xlsx"
+FILE_2025 = BASE_DIR / "Liste_Aufgabe 2025 fuer KPis.xlsx"
+FILE_COSTS = BASE_DIR / "Ueberblick_LS.xlsx"
+
+STANDARD_ORDER_COLUMNS = [
+    "Auftragsname", "Auftraggeber", "Abteilung", "Auftragstyp", "Sprache",
+    "Wörter", "Stunden", "Dringend", "Kanal", "Eingang", "Lieferdatum",
+    "Durchlaufzeit", "Deadline", "Eingehalten?", "Translator",
+    "Korrektur", "Verantwörtlich", "Status", "Ablageort", "Bemerkungen",
+]
+
+LANGUAGES_2025 = ["EN", "IT", "ES", "NL", "PL", "PT", "CZ", "SL"]
+LANGUAGES_2026 = LANGUAGES_2025 + ["SV", "FI", "NW", "DA", "GR"]
+
+
+# ============================================================
+# HILFSFUNKTIONEN
+# ============================================================
+def clean_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df.columns = (
+        df.columns.astype(str)
+        .str.replace("\ufeff", "", regex=False)
+        .str.strip()
     )
-    df.columns = df.columns.str.strip()
-    df["Eingang"]      = pd.to_datetime(df["Eingang"],      errors="coerce")
-    df["Lieferdatum"]  = pd.to_datetime(df["Lieferdatum"],  errors="coerce")
-    df["Deadline"]     = pd.to_datetime(df["Deadline"],     errors="coerce")
-    df["Monat"]        = df["Eingang"].dt.strftime("%Y-%m")
-    df["Dringend"]     = df["Dringend"].fillna(0).astype(int)
-    df["Eingehalten?"] = df["Eingehalten?"].astype(str).str.replace("✅", "").str.replace("❌", "").str.strip()
-    df["Jahr"]         = "2026"
     return df
 
-# ─────────────────────────────────────────────
-# 📁 DATEN LADEN 2025
-# ─────────────────────────────────────────────
-def load_data_2025():
-    df = pd.read_excel(
-        "Liste_Aufgabe 2025 fuer KPis.xlsx",
-        sheet_name="2025",
-        header=0
-    )
-    df.columns = df.columns.str.strip()
-    df["Datum"]     = pd.to_datetime(df["Datum"],     errors="coerce")
-    df["Lieferung"] = pd.to_datetime(df["Lieferung"], errors="coerce")
-    df["Deadline"]  = pd.to_datetime(df["Deadline"],  errors="coerce")
-    df["Monat"]     = df["Datum"].dt.strftime("%Y-%m")
-    df["Jahr"]      = "2025"
-    df = df.rename(columns={
-        "Aufträge"       : "Auftragsname",
-        "Datum"          : "Eingang",
-        "Lieferung"      : "Lieferdatum",
-        "Verantwortlich" : "Verantwörtlich"
-    })
+
+def ensure_columns(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    df = df.copy()
+    for column in columns:
+        if column not in df.columns:
+            df[column] = pd.NA
     return df
 
-# ─────────────────────────────────────────────
-# 📁 DATEN LADEN KOSTEN 2025
-# ─────────────────────────────────────────────
-# NEU ✅
-def load_kosten_2025():
-    df = pd.read_excel(
-        "Ueberblick_LS.xlsx",
-        sheet_name="2025",
-        header=0
-    )
-    df.columns = df.columns.str.strip()
-    # Leere Zeilen entfernen
-    df = df.dropna(subset=["Datum"])
-    df = df[df["Datum"].astype(str).str.strip() != ""]
-    df["Datum"] = pd.to_datetime(df["Datum"], errors="coerce")
-    df = df.dropna(subset=["Datum"])
-    df["Monat"] = df["Datum"].dt.strftime("%Y-%m")
-    df["Jahr"]  = "2025"
-    sprachen_2025 = ["EN", "IT", "ES", "NL", "PL", "PT", "CZ", "SL"]
-    for s in sprachen_2025:
-        if s in df.columns:
-            df[s] = pd.to_numeric(df[s], errors="coerce").fillna(0)
+
+def parse_numeric(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    df = df.copy()
+    for column in columns:
+        if column in df.columns:
+            df[column] = pd.to_numeric(df[column], errors="coerce")
     return df
 
-# ─────────────────────────────────────────────
-# 📁 DATEN LADEN KOSTEN 2026
-# ─────────────────────────────────────────────
-def load_kosten_2026():
-    df = pd.read_excel(
-        "Ueberblick_LS.xlsx",
-        sheet_name="2026",
-        header=0
+
+def parse_currency_series(series: pd.Series) -> pd.Series:
+    """Wandelt Zahlen wie '€ 1.234,56' oder '1,234.56 €' in Eurobeträge um."""
+    if pd.api.types.is_numeric_dtype(series):
+        return pd.to_numeric(series, errors="coerce")
+
+    text = series.astype("string").str.strip()
+    text = text.str.replace("€", "", regex=False).str.replace("\\u00a0", "", regex=False)
+    text = text.str.replace(r"[^0-9,.-]", "", regex=True)
+
+    def convert(value):
+        if pd.isna(value) or value == "":
+            return np.nan
+        value = str(value)
+        if "," in value and "." in value:
+            # Das letzte Trennzeichen ist das Dezimaltrennzeichen.
+            if value.rfind(",") > value.rfind("."):
+                value = value.replace(".", "").replace(",", ".")
+            else:
+                value = value.replace(",", "")
+        elif "," in value:
+            value = value.replace(",", ".")
+        try:
+            return float(value)
+        except ValueError:
+            return np.nan
+
+    return text.map(convert)
+
+
+def parse_currency_series(series: pd.Series) -> pd.Series:
+    """Wandelt Zahlen wie '€ 1.234,56' oder '1,234.56 €' in Eurobeträge um."""
+    if pd.api.types.is_numeric_dtype(series):
+        return pd.to_numeric(series, errors="coerce")
+
+    text = series.astype("string").str.strip()
+    text = text.str.replace("€", "", regex=False).str.replace("\u00a0", "", regex=False)
+    text = text.str.replace(r"[^0-9,.-]", "", regex=True)
+
+    def convert(value):
+        if pd.isna(value) or value == "":
+            return np.nan
+        value = str(value)
+        if "," in value and "." in value:
+            if value.rfind(",") > value.rfind("."):
+                value = value.replace(".", "").replace(",", ".")
+            else:
+                value = value.replace(",", "")
+        elif "," in value:
+            value = value.replace(",", ".")
+        try:
+            return float(value)
+        except ValueError:
+            return np.nan
+
+    return text.map(convert)
+
+
+def parse_dates(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    df = df.copy()
+    for column in columns:
+        if column in df.columns:
+            df[column] = pd.to_datetime(df[column], errors="coerce")
+    return df
+
+
+def normalize_orders(df: pd.DataFrame, year: str) -> pd.DataFrame:
+    df = clean_columns(df)
+    df = ensure_columns(df, STANDARD_ORDER_COLUMNS)
+
+    # Deadline-Rohwert vor der Datumsumwandlung sichern.
+    # Leere Deadline bleibt leer; ASAP bleibt als eigener Sonderfall erhalten.
+    deadline_raw = df["Deadline"].astype("string").str.strip()
+    df["Deadline_Kategorie"] = "Konkrete Deadline"
+    df.loc[deadline_raw.isna() | deadline_raw.eq(""), "Deadline_Kategorie"] = (
+        "Keine Deadline"
     )
-    df.columns = df.columns.str.strip()
-    df["Datum"] = pd.to_datetime(df["Datum"], errors="coerce")
-    df["Monat"] = df["Datum"].dt.strftime("%Y-%m")
-    df["Jahr"]  = "2026"
+    df.loc[deadline_raw.str.upper().eq("ASAP"), "Deadline_Kategorie"] = "ASAP"
+
+    df = parse_dates(df, ["Eingang", "Lieferdatum", "Deadline"])
+    df = parse_numeric(df, ["Wörter", "Stunden", "Durchlaufzeit"])
+
+    for column in [
+        "Auftragsname", "Auftraggeber", "Abteilung", "Auftragstyp", "Sprache",
+        "Kanal", "Translator", "Korrektur", "Verantwörtlich", "Status",
+    ]:
+        if column in df.columns:
+            df[column] = df[column].astype("string").str.strip()
+
+    # Fehlende Dringlichkeitsangaben bleiben unbekannt und werden nicht zu 0.
+    if "Dringend" in df.columns:
+        df["Dringend"] = pd.to_numeric(df["Dringend"], errors="coerce")
+
+    # Einheitliche, automatisch berechnete Zeitfelder.
+    df["Monat"] = df["Eingang"].dt.to_period("M").astype("string")
+    df["Jahr"] = year
+
+    # Einzelne Aufträge entsprechen einzelnen Zielsprachen.
+    df["Auftragsebene"] = "Zielsprache"
+
+    # Nicht zugeordnete Abteilungen bleiben sichtbar.
+    df["Abteilung_Anzeige"] = (
+        df["Abteilung"].fillna("Nicht zugeordnet").replace("", "Nicht zugeordnet")
+    )
+
+    # Gültiger Zeitbereich: bewusst weit genug für historische Korrekturen,
+    # aber 1970-/Excel-Fehlwerte werden ausgeschlossen.
+    df["Gueltiger_Eingang"] = df["Eingang"].between(
+        pd.Timestamp("2024-01-01"), pd.Timestamp("2027-12-31")
+    )
+
+    df["Durchlaufzeit_Tage"] = (
+        df["Lieferdatum"] - df["Eingang"]
+    ).dt.total_seconds() / 86400
+
+    df["Gueltige_Durchlaufzeit"] = (
+        df["Durchlaufzeit_Tage"].notna()
+        & (df["Durchlaufzeit_Tage"] >= 0)
+        & (df["Durchlaufzeit_Tage"] <= 365)
+    )
+
+    # Termintreue nur bei Lieferung und konkreter Kalender-Deadline berechnen.
+    # Leere Deadline und ASAP bleiben in der Gesamtzahl, sind aber nicht bewertbar.
+    df["Lieferstatus"] = "Nicht bewertbar"
+    geliefert = df["Lieferdatum"].notna()
+    konkrete_deadline = (
+        df["Deadline_Kategorie"].eq("Konkrete Deadline")
+        & df["Deadline"].notna()
+    )
+    bewertbar = geliefert & konkrete_deadline
+
+    df.loc[~geliefert & df["Deadline_Kategorie"].eq("Konkrete Deadline"), "Lieferstatus"] = (
+        "Noch nicht geliefert"
+    )
+    df.loc[~geliefert & df["Deadline_Kategorie"].eq("Keine Deadline"), "Lieferstatus"] = (
+        "Nicht bewertbar - keine Deadline"
+    )
+    df.loc[~geliefert & df["Deadline_Kategorie"].eq("ASAP"), "Lieferstatus"] = (
+        "Noch nicht geliefert - ASAP"
+    )
+    df.loc[geliefert & df["Deadline_Kategorie"].eq("Keine Deadline"), "Lieferstatus"] = (
+        "Geliefert - keine Deadline"
+    )
+    df.loc[geliefert & df["Deadline_Kategorie"].eq("ASAP"), "Lieferstatus"] = (
+        "Geliefert - ASAP"
+    )
+    df.loc[
+        bewertbar & (df["Lieferdatum"] <= df["Deadline"]),
+        "Lieferstatus",
+    ] = "Fristgerecht geliefert"
+    df.loc[
+        bewertbar & (df["Lieferdatum"] > df["Deadline"]),
+        "Lieferstatus",
+    ] = "Verspätet geliefert"
+
+    df["Frist_bewertbar"] = bewertbar
+    df["Fristgerecht"] = np.where(
+        bewertbar,
+        df["Lieferdatum"] <= df["Deadline"],
+        pd.NA,
+    )
+
+    return df
+
+
+@st.cache_data(show_spinner=False)
+def load_orders_2026() -> pd.DataFrame:
+    df = pd.read_excel(FILE_2026, sheet_name="2026", header=0)
+    return normalize_orders(df, "2026")
+
+
+@st.cache_data(show_spinner=False)
+def load_orders_2025() -> pd.DataFrame:
+    df = pd.read_excel(FILE_2025, sheet_name="2025", header=0)
+    df = clean_columns(df)
+    df = df.rename(
+        columns={
+            "Aufträge": "Auftragsname",
+            "Datum": "Eingang",
+            "Lieferung": "Lieferdatum",
+            "Verantwortlich": "Verantwörtlich",
+        }
+    )
+    return normalize_orders(df, "2025")
+
+
+@st.cache_data(show_spinner=False)
+def load_costs(sheet_name: str, year: str) -> pd.DataFrame:
+    df = pd.read_excel(FILE_COSTS, sheet_name=sheet_name, header=0)
+    df = clean_columns(df)
     df = df.rename(columns={"Bereich": "Abteilung"})
-    sprachen_2026 = ["EN", "IT", "ES", "NL", "PL", "PT", "CZ", "SL",
-                     "SV", "FI", "NW", "DA", "GR"]
-    for s in sprachen_2026:
-        if s in df.columns:
-            df[s] = pd.to_numeric(df[s], errors="coerce").fillna(0)
+    if "Datum" not in df.columns:
+        raise KeyError("Die Kostentabelle enthält keine Spalte 'Datum'.")
+
+    df["Datum"] = pd.to_datetime(df["Datum"], errors="coerce")
+    df = df.dropna(subset=["Datum"]).copy()
+    df["Monat"] = df["Datum"].dt.to_period("M").astype("string")
+    df["Jahr"] = year
+
+    languages = LANGUAGES_2026 if year == "2026" else LANGUAGES_2025
+    available_languages = [language for language in languages if language in df.columns]
+    for language in available_languages:
+        df[language] = parse_currency_series(df[language]).fillna(0)
+
+    # Die Quelldatei enthält TOTAL teilweise leer; deshalb wird der Gesamtbetrag
+    # zuverlässig aus den normalisierten Sprachspalten berechnet.
+    df["Gesamt"] = df[available_languages].sum(axis=1)
+
     return df
 
-df_2026     = load_data_2026()
-df_2025     = load_data_2025()
-kosten_2025 = load_kosten_2025()
-kosten_2026 = load_kosten_2026()
 
-# ─────────────────────────────────────────────
-# 🎛️ SEITENLEISTE – NAVIGATION
-# ─────────────────────────────────────────────
-st.sidebar.title("🎛️ Navigation")
+def format_number(value: float | int | None) -> str:
+    if value is None or pd.isna(value):
+        return "-"
+    return f"{value:,.0f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
+
+def format_euro(value: float | int | None) -> str:
+    if value is None or pd.isna(value):
+        return "-"
+    return (
+        f"{value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        + " €"
+    )
+
+
+def show_load_error(label: str, error: Exception) -> None:
+    st.error(f"{label} konnte nicht geladen werden: {error}")
+    st.stop()
+
+
+# ============================================================
+# DATEN LADEN
+# ============================================================
+try:
+    df_2026 = load_orders_2026()
+    df_2025 = load_orders_2025()
+except FileNotFoundError as exc:
+    show_load_error(
+        "Eine benötigte Excel-Datei wurde nicht gefunden. Prüfe Dateinamen und Speicherort",
+        exc,
+    )
+except (KeyError, ValueError) as exc:
+    show_load_error("Die Excel-Struktur ist nicht wie erwartet", exc)
+
+
+# ============================================================
+# NAVIGATION
+# ============================================================
+st.sidebar.title("Navigation")
 seite = st.sidebar.radio(
     "Seite auswählen:",
     [
         "📊 KPI Dashboard 2026",
         "📈 Jahresvergleich 2025 vs 2026",
-        "💰 Kosten Übersicht"
-    ]
+        "💰 Kosten Übersicht",
+    ],
 )
 
-st.sidebar.markdown("---")
+if st.sidebar.button("Daten neu laden"):
+    st.cache_data.clear()
+    st.rerun()
 
-# ─────────────────────────────────────────────
-# 📊 SEITE 1 – KPI DASHBOARD 2026
-# ─────────────────────────────────────────────
+
+# ============================================================
+# SEITE 1: KPI DASHBOARD 2026
+# ============================================================
 if seite == "📊 KPI Dashboard 2026":
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Filter")
 
-    st.sidebar.title("🎛️ Filter")
-
-    abteilungen = ["Alle"] + sorted(df_2026["Abteilung"].dropna().unique().tolist())
+    abteilungen = ["Alle"] + sorted(
+        df_2026["Abteilung_Anzeige"].dropna().unique().tolist()
+    )
     abt_filter = st.sidebar.selectbox("Abteilung", abteilungen)
 
-    kanäle = ["Alle"] + sorted(df_2026["Kanal"].dropna().unique().tolist())
-    kanal_filter = st.sidebar.selectbox("Kanal", kanäle)
+    kanaele = ["Alle"] + sorted(df_2026["Kanal"].dropna().unique().tolist())
+    kanal_filter = st.sidebar.selectbox("Kanal", kanaele)
 
-    min_datum = df_2026["Eingang"].min().date()
-    max_datum = df_2026["Eingang"].max().date()
+    deadline_kategorien = ["Alle"] + [
+        "Konkrete Deadline", "Keine Deadline", "ASAP"
+    ]
+    deadline_filter = st.sidebar.selectbox(
+        "Deadline-Status", deadline_kategorien
+    )
+
+    gueltige_eingaenge = df_2026.loc[
+        df_2026["Gueltiger_Eingang"], "Eingang"
+    ].dropna()
+    if gueltige_eingaenge.empty:
+        st.error("Es wurden keine gültigen Eingangsdaten für 2026 gefunden.")
+        st.stop()
+
+    min_datum = gueltige_eingaenge.min().date()
+    max_datum = gueltige_eingaenge.max().date()
     datum_range = st.sidebar.date_input(
-        "Zeitraum 2026",
+        "Zeitraum Eingang",
         value=(min_datum, max_datum),
         min_value=min_datum,
-        max_value=max_datum
+        max_value=max_datum,
     )
 
     df_filtered = df_2026.copy()
 
     if abt_filter != "Alle":
-        df_filtered = df_filtered[df_filtered["Abteilung"] == abt_filter]
+        df_filtered = df_filtered[
+            df_filtered["Abteilung_Anzeige"] == abt_filter
+        ]
 
     if kanal_filter != "Alle":
         df_filtered = df_filtered[df_filtered["Kanal"] == kanal_filter]
 
-    if len(datum_range) == 2:
+    if deadline_filter != "Alle":
         df_filtered = df_filtered[
-            (df_filtered["Eingang"].dt.date >= datum_range[0]) &
-            (df_filtered["Eingang"].dt.date <= datum_range[1])
+            df_filtered["Deadline_Kategorie"] == deadline_filter
         ]
 
-    total_auftraege      = len(df_filtered)
-    puenktlich           = df_filtered["Eingehalten?"].str.lower() == "ja"
-    puenktlichkeitsrate  = puenktlich.sum() / total_auftraege * 100 if total_auftraege > 0 else 0
-    zu_spaet             = (~puenktlich).sum()
-    verzoegerungsrate    = zu_spaet / total_auftraege * 100 if total_auftraege > 0 else 0
-    vor_deadline_kpi     = (df_filtered["Lieferdatum"] < df_filtered["Deadline"]).sum()
-    vor_deadline_rate    = vor_deadline_kpi / total_auftraege * 100 if total_auftraege > 0 else 0
-    dringend_anz         = (df_filtered["Dringend"] == 1).sum()
+    if isinstance(datum_range, (tuple, list)) and len(datum_range) == 2:
+        start_date, end_date = datum_range
+        df_filtered = df_filtered[
+            df_filtered["Eingang"].dt.date.between(start_date, end_date)
+        ]
 
-    df_filtered = df_filtered.copy()
-    df_filtered["Durchlaufzeit_h"] = (
-        df_filtered["Lieferdatum"] - df_filtered["Eingang"]
-    ).dt.total_seconds() / 3600
+    total_auftraege = len(df_filtered)
+    deadline_konkret = df_filtered["Deadline_Kategorie"].eq("Konkrete Deadline")
+    keine_deadline = df_filtered["Deadline_Kategorie"].eq("Keine Deadline")
+    asap_deadline = df_filtered["Deadline_Kategorie"].eq("ASAP")
+    fristbewertbar = df_filtered["Frist_bewertbar"]
+    fristgerecht = df_filtered["Fristgerecht"].eq(True)
+    verspätet = fristbewertbar & ~fristgerecht
+    fristtreue = (
+        fristgerecht[fristbewertbar].mean() * 100
+        if fristbewertbar.any()
+        else np.nan
+    )
 
-    st.title("📊 KPI Dashboard – TCO-Language Services")
-    stand = datetime.today().strftime("%d.%m.%Y")
-    st.markdown(f"📅 **Stand: {stand}**")
+    offene_auftraege = (~df_filtered["Lieferdatum"].notna()).sum()
+    gueltige_zeiten = df_filtered.loc[
+        df_filtered["Gueltige_Durchlaufzeit"], "Durchlaufzeit_Tage"
+    ]
+    median_durchlaufzeit = (
+        gueltige_zeiten.median() if not gueltige_zeiten.empty else np.nan
+    )
+    p90_durchlaufzeit = (
+        gueltige_zeiten.quantile(0.90) if not gueltige_zeiten.empty else np.nan
+    )
+    wortvolumen = df_filtered["Wörter"].sum(min_count=1)
+
+    st.title("KPI Dashboard - Language Services")
+    st.caption(
+        f"Datenstand Eingang: {df_2026['Eingang'].max():%d.%m.%Y} | "
+        f"Dashboard aktualisiert: {datetime.now():%d.%m.%Y %H:%M}"
+    )
+
+    k1, k2, k3, k4, k5, k6 = st.columns(6)
+    k1.metric("Aufträge gesamt", format_number(total_auftraege))
+    k2.metric(
+        "Termintreue",
+        f"{fristtreue:.1f}%" if pd.notna(fristtreue) else "-",
+        help="Nur gelieferte Aufträge mit konkreter Deadline werden bewertet.",
+    )
+    k3.metric("Keine Deadline", format_number(keine_deadline.sum()))
+    k4.metric("ASAP", format_number(asap_deadline.sum()))
+    k5.metric("Verspätet geliefert", format_number(verspätet.sum()))
+    k6.metric("Noch nicht geliefert", format_number(offene_auftraege))
+
+    s1, s2, s3, s4 = st.columns(4)
+    s1.metric("Konkrete Deadline", format_number(deadline_konkret.sum()))
+    s2.metric("Termintreue bewertet", format_number(fristbewertbar.sum()))
+    s3.metric("Fristgerecht", format_number(fristgerecht[fristbewertbar].sum()))
+    s4.metric("Nicht bewertbar", format_number((~fristbewertbar).sum()))
+
     st.markdown("---")
-
-    k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("📦 Aufträge gesamt",        total_auftraege)
-    k2.metric("✅ Pünktlichkeitsrate",     f"{puenktlichkeitsrate:.1f}%")
-    k3.metric("🎯 Vor Deadline geliefert", f"{vor_deadline_rate:.1f}%")
-    k4.metric("📉 Verzögerungsrate",       f"{verzoegerungsrate:.1f}%")
-    k5.metric("🚨 Dringende Aufträge",     int(dringend_anz))
-
-    st.markdown("---")
+    st.info(
+        "Die Deadline wird vom Auftraggeber vorgegeben. 'Termintreue' wird nur "
+        "für gelieferte Aufträge mit konkreter Deadline berechnet. Leere Deadlines "
+        "und ASAP bleiben in der Gesamtzahl, sind aber nicht bewertbar."
+    )
 
     col1, col2 = st.columns(2)
 
     with col1:
-        st.subheader("📅 Aufträge pro Monat 2026")
-        df_2026_filtered = df_filtered[df_filtered["Eingang"].dt.year == 2026]
-        auftraege_monat = df_2026_filtered.groupby("Monat")["Auftragsname"].count().reset_index()
-        auftraege_monat.columns = ["Monat", "Anzahl"]
-        auftraege_monat = auftraege_monat.sort_values("Monat")
-        fig1 = px.bar(auftraege_monat, x="Monat", y="Anzahl",
-                      color_discrete_sequence=["#4C9BE8"],
-                      category_orders={"Monat": sorted(auftraege_monat["Monat"].tolist())})
-        fig1.update_xaxes(type="category")
-        st.plotly_chart(fig1, use_container_width=True)
+        st.subheader("Aufträge pro Monat")
+        monat = (
+            df_filtered[df_filtered["Gueltiger_Eingang"]]
+            .groupby("Monat", dropna=False)
+            .size()
+            .rename("Anzahl")
+            .reset_index()
+            .sort_values("Monat")
+        )
+        fig = px.bar(
+            monat,
+            x="Monat",
+            y="Anzahl",
+            labels={"Monat": "Monat des Eingangs", "Anzahl": "Aufträge"},
+            color_discrete_sequence=["#4472C4"],
+        )
+        fig.update_layout(showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
 
     with col2:
-        st.subheader("🏢 Aufträge pro Abteilung")
-        auftraege_abt = df_filtered.groupby("Abteilung")["Auftragsname"].count().reset_index()
-        auftraege_abt.columns = ["Abteilung", "Anzahl"]
-        fig2 = px.bar(auftraege_abt, x="Abteilung", y="Anzahl",
-                      color_discrete_sequence=["#56C596"])
-        st.plotly_chart(fig2, use_container_width=True)
+        st.subheader("Aufträge pro Abteilung")
+        by_department = (
+            df_filtered.groupby("Abteilung_Anzeige", dropna=False)
+            .size()
+            .rename("Anzahl")
+            .reset_index()
+            .sort_values("Anzahl", ascending=True)
+        )
+        fig = px.bar(
+            by_department,
+            x="Anzahl",
+            y="Abteilung_Anzeige",
+            orientation="h",
+            labels={"Abteilung_Anzeige": "Abteilung", "Anzahl": "Aufträge"},
+            color_discrete_sequence=["#70AD47"],
+        )
+        fig.update_layout(showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
 
     col3, col4 = st.columns(2)
 
     with col3:
-        st.subheader("📬 Anzahl Aufträge pro Kanal")
-        auftraege_kanal = df_filtered.groupby("Kanal")["Auftragsname"].count().reset_index()
-        auftraege_kanal.columns = ["Kanal", "Anzahl"]
-        fig3 = px.pie(auftraege_kanal, names="Kanal", values="Anzahl",
-                      color_discrete_sequence=px.colors.qualitative.Pastel)
-        st.plotly_chart(fig3, use_container_width=True)
+        st.subheader("Aufträge pro Kanal")
+        by_channel = (
+            df_filtered.groupby("Kanal", dropna=False)
+            .size()
+            .rename("Anzahl")
+            .reset_index()
+            .sort_values("Anzahl", ascending=True)
+        )
+        by_channel["Kanal"] = by_channel["Kanal"].fillna("Unbekannt")
+        fig = px.bar(
+            by_channel,
+            x="Anzahl",
+            y="Kanal",
+            orientation="h",
+            labels={"Kanal": "Kanal", "Anzahl": "Aufträge"},
+            color_discrete_sequence=["#ED7D31"],
+        )
+        fig.update_layout(showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
 
     with col4:
-        st.subheader("✅ Lieferstatus")
-        vor_deadline   = (df_filtered["Lieferdatum"] < df_filtered["Deadline"]).sum()
-        puenktlich_anz = (df_filtered["Lieferdatum"] == df_filtered["Deadline"]).sum()
-        zu_spaet_anz   = (df_filtered["Lieferdatum"] > df_filtered["Deadline"]).sum()
-
-        status_data = pd.DataFrame({
-            "Status": ["Vor Deadline", "Pünktlich", "Zu spät"],
-            "Anzahl": [int(vor_deadline), int(puenktlich_anz), int(zu_spaet_anz)]
-        })
-        fig4 = px.pie(status_data, names="Status", values="Anzahl",
-                      color_discrete_sequence=["#4C9BE8", "#56C596", "#E8604C"])
-        st.plotly_chart(fig4, use_container_width=True)
+        st.subheader("Lieferstatus")
+        status_data = (
+            df_filtered["Lieferstatus"]
+            .value_counts()
+            .rename_axis("Status")
+            .reset_index(name="Anzahl")
+            .sort_values("Anzahl", ascending=True)
+        )
+        fig = px.bar(
+            status_data,
+            x="Anzahl",
+            y="Status",
+            orientation="h",
+            labels={"Status": "Lieferstatus", "Anzahl": "Aufträge"},
+            color="Status",
+            color_discrete_map={
+                "Fristgerecht geliefert": "#70AD47",
+                "Verspätet geliefert": "#C00000",
+                "Noch nicht geliefert": "#FFC000",
+                "Geliefert - keine Deadline": "#A5A5A5",
+                "Nicht bewertbar - keine Deadline": "#A5A5A5",
+                "Geliefert - ASAP": "#8064A2",
+                "Noch nicht geliefert - ASAP": "#8064A2",
+                "Nicht bewertbar": "#A5A5A5",
+            },
+        )
+        fig.update_layout(showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("---")
+    st.subheader("Aufträge nach Kanal und Deadline-Status")
 
-    st.subheader("🌍 Anzahl Aufträge pro Sprache")
-    auftraege_sprache = df_filtered.groupby("Sprache").agg(
-        Aufträge = ("Auftragsname", "count")
-    ).reset_index()
-    fig5 = px.bar(auftraege_sprache, x="Sprache", y="Aufträge",
-                  color="Sprache", title="Anzahl Aufträge pro Sprache")
-    st.plotly_chart(fig5, use_container_width=True)
+    deadline_colors = {
+        "Konkrete Deadline": "#4472C4",
+        "Keine Deadline": "#A5A5A5",
+        "ASAP": "#8064A2",
+    }
 
-    st.markdown("---")
-
-    st.subheader("📋 Rohdaten 2026")
-    st.dataframe(df_filtered, use_container_width=True)
-
-    st.markdown("---")
-
-    st.subheader("💾 Bericht exportieren")
-
-    def convert_df(df):
-        return df.to_csv(index=False).encode("utf-8")
-
-    csv = convert_df(df_filtered)
-    st.download_button(
-        label="⬇️ CSV herunterladen",
-        data=csv,
-        file_name="KPI_Bericht_2026.csv",
-        mime="text/csv"
+    channel_deadline = (
+        df_filtered.assign(
+            Kanal_Anzeige=df_filtered["Kanal"]
+            .fillna("Nicht angegeben")
+            .replace("", "Nicht angegeben")
+        )
+        .groupby(["Kanal_Anzeige", "Deadline_Kategorie"], dropna=False)
+        .size()
+        .rename("Anzahl")
+        .reset_index()
     )
+    fig = px.bar(
+        channel_deadline,
+        x="Anzahl",
+        y="Kanal_Anzeige",
+        color="Deadline_Kategorie",
+        orientation="h",
+        barmode="stack",
+        labels={
+            "Kanal_Anzeige": "Kanal",
+            "Anzahl": "Aufträge",
+            "Deadline_Kategorie": "Deadline",
+        },
+        color_discrete_map=deadline_colors,
+    )
+    fig.update_layout(legend_title_text="Deadline-Status")
+    st.plotly_chart(fig, use_container_width=True)
 
-# ─────────────────────────────────────────────
-# 📈 SEITE 2 – JAHRESVERGLEICH 2025 VS 2026
-# ─────────────────────────────────────────────
-elif seite == "📈 Jahresvergleich 2025 vs 2026":
+    st.subheader("Aufträge nach Abteilung und Deadline-Status")
+    department_deadline = (
+        df_filtered.groupby(["Abteilung_Anzeige", "Deadline_Kategorie"], dropna=False)
+        .size()
+        .rename("Anzahl")
+        .reset_index()
+    )
+    fig = px.bar(
+        department_deadline,
+        x="Anzahl",
+        y="Abteilung_Anzeige",
+        color="Deadline_Kategorie",
+        orientation="h",
+        barmode="stack",
+        labels={
+            "Abteilung_Anzeige": "Abteilung",
+            "Anzahl": "Aufträge",
+            "Deadline_Kategorie": "Deadline",
+        },
+        color_discrete_map=deadline_colors,
+    )
+    fig.update_layout(legend_title_text="Deadline-Status")
+    st.plotly_chart(fig, use_container_width=True)
 
-    st.title("📈 Jahresvergleich 2025 vs 2026")
-    stand = datetime.today().strftime("%d.%m.%Y")
-    st.markdown(f"📅 **Stand: {stand}**")
-    st.markdown("---")
-
-    total_2025 = len(df_2025)
-    total_2026 = len(df_2026)
-
-    v1, v2 = st.columns(2)
-    v1.metric("📦 Aufträge 2025", total_2025)
-    v2.metric("📦 Aufträge 2026", total_2026,
-              delta=f"{total_2026 - total_2025:+d}")
+    no_deadline = df_filtered[keine_deadline].copy()
+    with st.expander("Aufträge ohne Deadline nach Kanal und Abteilung"):
+        if no_deadline.empty:
+            st.info("Im aktuellen Filter gibt es keine Aufträge ohne Deadline.")
+        else:
+            no_deadline_summary = (
+                no_deadline.assign(
+                    Kanal_Anzeige=no_deadline["Kanal"]
+                    .fillna("Nicht angegeben")
+                    .replace("", "Nicht angegeben")
+                )
+                .groupby(["Abteilung_Anzeige", "Kanal_Anzeige"], dropna=False)
+                .size()
+                .rename("Aufträge ohne Deadline")
+                .reset_index()
+                .sort_values("Aufträge ohne Deadline", ascending=False)
+            )
+            st.dataframe(no_deadline_summary, use_container_width=True, hide_index=True)
 
     st.markdown("---")
 
     col5, col6 = st.columns(2)
-
     with col5:
-        st.subheader("🌍 Sprachen 2025")
-        sprachen_2025 = df_2025.groupby("Sprache")["Auftragsname"].count().reset_index()
-        sprachen_2025.columns = ["Sprache", "Anzahl"]
-        sprachen_2025 = sprachen_2025.sort_values("Anzahl", ascending=False)
-        fig6 = px.bar(sprachen_2025, x="Sprache", y="Anzahl",
-                      color="Sprache", title="Aufträge pro Sprache 2025")
-        st.plotly_chart(fig6, use_container_width=True)
+        st.subheader("Aufträge pro Zielsprache")
+        by_language = (
+            df_filtered.groupby("Sprache", dropna=False)
+            .size()
+            .rename("Aufträge")
+            .reset_index()
+            .sort_values("Aufträge", ascending=True)
+        )
+        fig = px.bar(
+            by_language,
+            x="Aufträge",
+            y="Sprache",
+            orientation="h",
+            labels={"Sprache": "Zielsprache", "Aufträge": "Aufträge"},
+            color_discrete_sequence=["#5B9BD5"],
+        )
+        fig.update_layout(showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
 
     with col6:
-        st.subheader("🌍 Sprachen 2026")
-        sprachen_2026 = df_2026.groupby("Sprache")["Auftragsname"].count().reset_index()
-        sprachen_2026.columns = ["Sprache", "Anzahl"]
-        sprachen_2026 = sprachen_2026.sort_values("Anzahl", ascending=False)
-        fig7 = px.bar(sprachen_2026, x="Sprache", y="Anzahl",
-                      color="Sprache", title="Aufträge pro Sprache 2026")
-        st.plotly_chart(fig7, use_container_width=True)
+        st.subheader("Durchlaufzeit nach Zielsprache")
+        duration_by_language = (
+            df_filtered[df_filtered["Gueltige_Durchlaufzeit"]]
+            .groupby("Sprache", dropna=False)["Durchlaufzeit_Tage"]
+            .agg(Median="median", P90=lambda s: s.quantile(0.90), Anzahl="count")
+            .reset_index()
+            .sort_values("Median", ascending=True)
+        )
+        if duration_by_language.empty:
+            st.info("Keine gültigen Durchlaufzeiten im aktuellen Filter.")
+        else:
+            fig = px.bar(
+                duration_by_language,
+                x="Median",
+                y="Sprache",
+                orientation="h",
+                labels={"Sprache": "Zielsprache", "Median": "Median-Tage"},
+                hover_data=["P90", "Anzahl"],
+                color_discrete_sequence=["#8064A2"],
+            )
+            fig.update_layout(showlegend=False)
+            st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("---")
+    with st.expander("Datenqualität anzeigen"):
+        invalid_dates = (~df_filtered["Gueltiger_Eingang"]).sum()
+        invalid_durations = (~df_filtered["Gueltige_Durchlaufzeit"]).sum()
+        missing_deadlines = df_filtered["Deadline_Kategorie"].eq("Keine Deadline").sum()
+        asap_deadlines = df_filtered["Deadline_Kategorie"].eq("ASAP").sum()
+        missing_departments = (
+            df_filtered["Abteilung_Anzeige"] == "Nicht zugeordnet"
+        ).sum()
+        st.write(
+            {
+                "Ungültige Eingangsdatumswerte": int(invalid_dates),
+                "Nicht auswertbare Durchlaufzeiten": int(invalid_durations),
+                "Keine Deadline": int(missing_deadlines),
+                "ASAP ohne Kalenderdatum": int(asap_deadlines),
+                "Nicht zugeordnete Abteilungen": int(missing_departments),
+                "90. Perzentil Durchlaufzeit": (
+                    f"{p90_durchlaufzeit:.1f} Tage"
+                    if pd.notna(p90_durchlaufzeit)
+                    else "-"
+                ),
+            }
+        )
 
-    col7, col8 = st.columns(2)
+    with st.expander("Rohdaten anzeigen"):
+        export_columns = [
+            "Auftragsname", "Auftraggeber", "Abteilung_Anzeige", "Auftragstyp",
+            "Sprache", "Wörter", "Eingang", "Lieferdatum", "Deadline",
+            "Lieferstatus", "Deadline_Kategorie", "Frist_bewertbar",
+            "Durchlaufzeit_Tage", "Translator", "Kanal",
+        ]
+        export_df = df_filtered[
+            [column for column in export_columns if column in df_filtered.columns]
+        ]
+        st.dataframe(export_df, use_container_width=True, hide_index=True)
 
-    with col7:
-        st.subheader("🏢 Abteilungen 2025")
-        abt_2025 = df_2025.groupby("Abteilung")["Auftragsname"].count().reset_index()
-        abt_2025.columns = ["Abteilung", "Anzahl"]
-        fig8 = px.bar(abt_2025, x="Abteilung", y="Anzahl",
-                      color_discrete_sequence=["#F4A261"],
-                      title="Aufträge pro Abteilung 2025")
-        st.plotly_chart(fig8, use_container_width=True)
+        csv = export_df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+        st.download_button(
+            "CSV herunterladen",
+            data=csv,
+            file_name="KPI_Bericht_2026.csv",
+            mime="text/csv",
+        )
 
-    with col8:
-        st.subheader("🏢 Abteilungen 2026")
-        abt_2026 = df_2026.groupby("Abteilung")["Auftragsname"].count().reset_index()
-        abt_2026.columns = ["Abteilung", "Anzahl"]
-        fig9 = px.bar(abt_2026, x="Abteilung", y="Anzahl",
-                      color_discrete_sequence=["#56C596"],
-                      title="Aufträge pro Abteilung 2026")
-        st.plotly_chart(fig9, use_container_width=True)
 
-    st.markdown("---")
+# ============================================================
+# SEITE 2: JAHRESVERGLEICH
+# ============================================================
+elif seite == "📈 Jahresvergleich 2025 vs 2026":
+    st.title("Jahresvergleich 2025 vs 2026")
+    st.caption(
+        f"2026 ist ein laufendes Jahr; Vergleich bitte nur für gleiche Zeiträume interpretieren. "
+        f"Aktualisiert: {datetime.now():%d.%m.%Y %H:%M}"
+    )
 
-    st.subheader("📅 Aufträge pro Monat – 2025 vs 2026")
+    max_2025 = df_2025["Eingang"].max()
+    max_2026 = df_2026["Eingang"].max()
+    cutoff_month = min(
+        max_2025.month if pd.notna(max_2025) else 12,
+        max_2026.month if pd.notna(max_2026) else 12,
+    )
 
-    monat_2025 = df_2025.groupby("Monat")["Auftragsname"].count().reset_index()
-    monat_2025.columns = ["Monat", "Anzahl"]
-    monat_2025["Jahr"] = "2025"
+    y1, y2 = st.columns(2)
+    y1.metric("Aufträge 2025 gesamt", format_number(len(df_2025)))
+    y2.metric("Aufträge 2026 gesamt", format_number(len(df_2026)))
 
-    monat_2026 = df_2026.groupby("Monat")["Auftragsname"].count().reset_index()
-    monat_2026.columns = ["Monat", "Anzahl"]
-    monat_2026["Jahr"] = "2026"
+    monthly = pd.concat(
+        [
+            df_2025.assign(Jahr_Anzeige="2025"),
+            df_2026.assign(Jahr_Anzeige="2026"),
+        ],
+        ignore_index=True,
+    )
+    monthly = monthly[monthly["Gueltiger_Eingang"]].copy()
+    monthly["Monat_nummer"] = monthly["Eingang"].dt.month
+    monthly = (
+        monthly.groupby(["Jahr_Anzeige", "Monat_nummer"])
+        .size()
+        .rename("Anzahl")
+        .reset_index()
+    )
+    month_names = {
+        1: "Jan", 2: "Feb", 3: "Mrz", 4: "Apr", 5: "Mai", 6: "Jun",
+        7: "Jul", 8: "Aug", 9: "Sep", 10: "Okt", 11: "Nov", 12: "Dez",
+    }
+    monthly["Monat"] = monthly["Monat_nummer"].map(month_names)
 
-    monat_vergleich = pd.concat([monat_2025, monat_2026])
-    monat_vergleich["Monat_kurz"] = monat_vergleich["Monat"].str[-2:]
+    st.subheader("Aufträge pro Monat")
+    fig = px.bar(
+        monthly,
+        x="Monat_nummer",
+        y="Anzahl",
+        color="Jahr_Anzeige",
+        barmode="group",
+        labels={"Monat_nummer": "Monat", "Anzahl": "Aufträge", "Jahr_Anzeige": "Jahr"},
+        color_discrete_sequence=["#ED7D31", "#4472C4"],
+    )
+    fig.update_xaxes(
+        tickmode="array",
+        tickvals=list(month_names.keys()),
+        ticktext=list(month_names.values()),
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
-    fig10 = px.bar(monat_vergleich, x="Monat_kurz", y="Anzahl",
-                   color="Jahr", barmode="group",
-                   title="Aufträge pro Monat 2025 vs 2026",
-                   color_discrete_sequence=["#F4A261", "#4C9BE8"])
-    st.plotly_chart(fig10, use_container_width=True)
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("Aufträge pro Zielsprache")
+        language_compare = pd.concat(
+            [
+                df_2025.assign(Jahr_Anzeige="2025"),
+                df_2026.assign(Jahr_Anzeige="2026"),
+            ],
+            ignore_index=True,
+        )
+        language_compare = (
+            language_compare.groupby(["Sprache", "Jahr_Anzeige"])
+            .size()
+            .rename("Aufträge")
+            .reset_index()
+        )
+        fig = px.bar(
+            language_compare,
+            x="Sprache",
+            y="Aufträge",
+            color="Jahr_Anzeige",
+            barmode="group",
+            labels={"Sprache": "Zielsprache", "Jahr_Anzeige": "Jahr"},
+            color_discrete_sequence=["#ED7D31", "#4472C4"],
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
-# ─────────────────────────────────────────────
-# 💰 SEITE 3 – KOSTEN ÜBERSICHT
-# ─────────────────────────────────────────────
+    with col2:
+        st.subheader("Aufträge pro Abteilung")
+        department_compare = pd.concat(
+            [
+                df_2025.assign(Jahr_Anzeige="2025"),
+                df_2026.assign(Jahr_Anzeige="2026"),
+            ],
+            ignore_index=True,
+        )
+        department_compare = (
+            department_compare.groupby(["Abteilung_Anzeige", "Jahr_Anzeige"])
+            .size()
+            .rename("Aufträge")
+            .reset_index()
+            .sort_values("Aufträge", ascending=False)
+        )
+        fig = px.bar(
+            department_compare,
+            x="Aufträge",
+            y="Abteilung_Anzeige",
+            color="Jahr_Anzeige",
+            barmode="group",
+            orientation="h",
+            labels={"Abteilung_Anzeige": "Abteilung", "Jahr_Anzeige": "Jahr"},
+            color_discrete_sequence=["#ED7D31", "#4472C4"],
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+
+# ============================================================
+# SEITE 3: KOSTEN
+# ============================================================
 elif seite == "💰 Kosten Übersicht":
-
-    st.title("💰 Kosten Übersicht – TCO-Language Services")
-    stand = datetime.today().strftime("%d.%m.%Y")
-    st.markdown(f"📅 **Stand: {stand}**")
-    st.markdown("---")
+    st.title("Kosten Übersicht - Language Services")
+    st.caption(f"Aktualisiert: {datetime.now():%d.%m.%Y %H:%M}")
 
     jahr_filter = st.sidebar.radio("Jahr", ["2026", "2025", "2025 vs 2026"])
-    st.sidebar.markdown("---")
+
+    try:
+        costs_2025 = load_costs("2025", "2025")
+        costs_2026 = load_costs("2026", "2026")
+    except (FileNotFoundError, KeyError, ValueError) as exc:
+        show_load_error("Die Kostendaten", exc)
 
     if jahr_filter == "2026":
-        kosten_df = kosten_2026.copy()
-        sprachen  = ["EN", "IT", "ES", "NL", "PL", "PT", "CZ", "SL",
-                     "SV", "FI", "NW", "DA", "GR"]
+        costs = costs_2026.copy()
     elif jahr_filter == "2025":
-        kosten_df = kosten_2025.copy()
-        sprachen  = ["EN", "IT", "ES", "NL", "PL", "PT", "CZ", "SL"]
+        costs = costs_2025.copy()
     else:
-        kosten_2025_copy = kosten_2025.copy()
-        kosten_2026_copy = kosten_2026.copy()
-        kosten_df = pd.concat([kosten_2025_copy, kosten_2026_copy])
-        sprachen  = ["EN", "IT", "ES", "NL", "PL", "PT", "CZ", "SL"]
+        costs = pd.concat([costs_2025, costs_2026], ignore_index=True)
 
-    sprachen = [s for s in sprachen if s in kosten_df.columns]
+    all_languages = sorted(set(LANGUAGES_2025 + LANGUAGES_2026))
+    languages = [language for language in all_languages if language in costs.columns]
+    if not languages:
+        st.warning("Keine Sprachspalten in den Kostendaten gefunden.")
+        st.stop()
 
-    # ── Gesamtkosten KPI ──
-    kosten_df["Gesamt"] = kosten_df[sprachen].sum(axis=1)
-    gesamtkosten = kosten_df["Gesamt"].sum()
+    costs["Gesamt"] = costs[languages].sum(axis=1)
+    total_costs = costs["Gesamt"].sum()
+    st.metric("Gesamtkosten", format_euro(total_costs))
 
-    st.metric("💰 Gesamtkosten", f"{gesamtkosten:,.2f} €")
+    cost_by_language = (
+        costs[languages]
+        .sum()
+        .rename_axis("Sprache")
+        .reset_index(name="Kosten")
+    )
+    cost_by_language = cost_by_language[cost_by_language["Kosten"] > 0]
 
-    st.markdown("---")
+    st.subheader(f"Kosten pro Zielsprache - {jahr_filter}")
+    fig = px.bar(
+        cost_by_language.sort_values("Kosten", ascending=True),
+        x="Kosten",
+        y="Sprache",
+        orientation="h",
+        labels={"Kosten": "Kosten (€)", "Sprache": "Zielsprache"},
+        color_discrete_sequence=["#4472C4"],
+    )
+    fig.update_layout(showlegend=False)
+    st.plotly_chart(fig, use_container_width=True)
 
-    # ── Kosten pro Sprache ──
-    st.subheader(f"🌍 Kosten pro Sprache – {jahr_filter}")
+    if "Abteilung" in costs.columns:
+        st.subheader(f"Kosten pro Abteilung - {jahr_filter}")
+        costs["Abteilung_Anzeige"] = (
+            costs["Abteilung"].fillna("Nicht zugeordnet")
+        )
+        cost_by_department = (
+            costs.groupby("Abteilung_Anzeige", dropna=False)["Gesamt"]
+            .sum()
+            .rename("Kosten")
+            .reset_index()
+            .query("Kosten > 0")
+            .sort_values("Kosten", ascending=True)
+        )
+        fig = px.bar(
+            cost_by_department,
+            x="Kosten",
+            y="Abteilung_Anzeige",
+            orientation="h",
+            labels={"Kosten": "Kosten (€)", "Abteilung_Anzeige": "Abteilung"},
+            color_discrete_sequence=["#70AD47"],
+        )
+        fig.update_layout(showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
 
-    kosten_sprache = kosten_df[sprachen].sum().reset_index()
-    kosten_sprache.columns = ["Sprache", "Kosten (€)"]
-    kosten_sprache = kosten_sprache[kosten_sprache["Kosten (€)"] > 0]
-    kosten_sprache = kosten_sprache.sort_values("Kosten (€)", ascending=False)
+    st.subheader(f"Kosten pro Monat - {jahr_filter}")
+    cost_by_month = (
+        costs.groupby(["Monat", "Jahr"], dropna=False)["Gesamt"]
+        .sum()
+        .rename("Kosten")
+        .reset_index()
+        .sort_values("Monat")
+    )
+    cost_by_month["Monat_nummer"] = cost_by_month["Monat"].str[-2:].astype(int)
+    fig = px.bar(
+        cost_by_month,
+        x="Monat_nummer",
+        y="Kosten",
+        color="Jahr" if jahr_filter == "2025 vs 2026" else None,
+        barmode="group" if jahr_filter == "2025 vs 2026" else None,
+        labels={"Kosten": "Kosten (€)", "Monat_nummer": "Monat", "Jahr": "Jahr"},
+        color_discrete_sequence=["#ED7D31", "#4472C4"],
+    )
+    fig.update_xaxes(tickmode="linear", dtick=1)
+    st.plotly_chart(fig, use_container_width=True)
 
-    fig11 = px.bar(kosten_sprache, x="Sprache", y="Kosten (€)",
-                   color="Sprache",
-                   title=f"Kosten pro Sprache – {jahr_filter}")
-    st.plotly_chart(fig11, use_container_width=True)
+    if "Übersetzer" in costs.columns:
+        st.subheader(f"Kostenvolumen pro Übersetzer/Dienstleister - {jahr_filter}")
+        cost_by_translator = (
+            costs.groupby("Übersetzer", dropna=False)["Gesamt"]
+            .sum()
+            .rename("Kosten")
+            .reset_index()
+            .sort_values("Kosten", ascending=True)
+        )
+        cost_by_translator["Übersetzer"] = cost_by_translator["Übersetzer"].fillna(
+            "Unbekannt"
+        )
+        fig = px.bar(
+            cost_by_translator,
+            x="Kosten",
+            y="Übersetzer",
+            orientation="h",
+            labels={"Kosten": "Kosten (€)", "Übersetzer": "Übersetzer/Dienstleister"},
+            color_discrete_sequence=["#8064A2"],
+        )
+        fig.update_layout(showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("---")
-
-    # ── Kosten pro Abteilung ──
-    st.subheader(f"🏢 Kosten pro Abteilung – {jahr_filter}")
-
-    kosten_abt = kosten_df.groupby("Abteilung")["Gesamt"].sum().reset_index()
-    kosten_abt.columns = ["Abteilung", "Kosten (€)"]
-    kosten_abt = kosten_abt[kosten_abt["Kosten (€)"] > 0]
-    kosten_abt = kosten_abt.sort_values("Kosten (€)", ascending=False)
-
-    fig12 = px.bar(kosten_abt, x="Abteilung", y="Kosten (€)",
-                   color_discrete_sequence=["#56C596"],
-                   title=f"Kosten pro Abteilung – {jahr_filter}")
-    st.plotly_chart(fig12, use_container_width=True)
-
-    st.markdown("---")
-
-    # ── Kosten pro Monat ──
-    st.subheader(f"📅 Kosten pro Monat – {jahr_filter}")
-
-    kosten_monat = kosten_df.groupby(["Monat", "Jahr"])["Gesamt"].sum().reset_index()
-    kosten_monat.columns = ["Monat", "Jahr", "Kosten (€)"]
-    kosten_monat["Monat_kurz"] = kosten_monat["Monat"].str[-2:]
-    kosten_monat = kosten_monat.sort_values("Monat")
-
-    if jahr_filter == "2025 vs 2026":
-        fig13 = px.bar(kosten_monat, x="Monat_kurz", y="Kosten (€)",
-                       color="Jahr", barmode="group",
-                       title="Kosten pro Monat 2025 vs 2026",
-                       color_discrete_sequence=["#F4A261", "#4C9BE8"])
-    else:
-        fig13 = px.bar(kosten_monat, x="Monat_kurz", y="Kosten (€)",
-                       color_discrete_sequence=["#4C9BE8"],
-                       title=f"Kosten pro Monat – {jahr_filter}")
-
-    fig13.update_xaxes(type="category")
-    st.plotly_chart(fig13, use_container_width=True)
-
-    st.markdown("---")
-
-    # ── Kosten pro Übersetzer ──
-    st.subheader(f"👤 Kosten pro Übersetzer – {jahr_filter}")
-
-    kosten_uebersetzer = kosten_df.groupby("Übersetzer")["Gesamt"].sum().reset_index()
-    kosten_uebersetzer.columns = ["Übersetzer", "Kosten (€)"]
-    kosten_uebersetzer = kosten_uebersetzer[kosten_uebersetzer["Kosten (€)"] > 0]
-    kosten_uebersetzer = kosten_uebersetzer.sort_values("Kosten (€)", ascending=False)
-
-    fig14 = px.bar(kosten_uebersetzer, x="Übersetzer", y="Kosten (€)",
-                   color="Übersetzer",
-                   title=f"Kosten pro Übersetzer – {jahr_filter}")
-    st.plotly_chart(fig14, use_container_width=True)
-
-    st.markdown("---")
-
-    # ── Rohdaten ──
-    st.subheader("📋 Rohdaten Kosten")
-    st.dataframe(kosten_df, use_container_width=True)
+    with st.expander("Rohdaten Kosten anzeigen"):
+        st.dataframe(costs, use_container_width=True, hide_index=True)
