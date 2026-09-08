@@ -61,6 +61,18 @@ def parse_numeric(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     return df
 
 
+def normalize_channel_values(series: pd.Series) -> pd.Series:
+    """Fasst alle rein numerischen Kanalwerte unter 'jazz' zusammen."""
+    values = series.astype("string").str.strip()
+    numeric = (
+        values.notna()
+        & values.ne("")
+        & pd.to_numeric(values, errors="coerce").notna()
+    )
+    values.loc[numeric] = "jazz"
+    return values
+
+
 def parse_currency_series(series: pd.Series) -> pd.Series:
     """Wandelt Zahlen wie '€ 1.234,56' oder '1,234.56 €' in Eurobeträge um."""
     if pd.api.types.is_numeric_dtype(series):
@@ -148,16 +160,10 @@ def normalize_orders(df: pd.DataFrame, year: str) -> pd.DataFrame:
     ]:
         if column in df.columns:
             df[column] = df[column].astype("string").str.strip()
-            if column == "Kanal":
-                # Kanalwerte, die nur aus Zahlen bestehen, gehören zu jazz.
-                # Die Prüfung funktioniert auch dann, wenn pandas den Wert
-                # zunächst als Zahl oder als Dezimalzahl eingelesen hat.
-                numeric_channel = (
-                    df[column].notna()
-                    & df[column].ne("")
-                    & pd.to_numeric(df[column], errors="coerce").notna()
-                )
-                df.loc[numeric_channel, column] = "jazz"
+    # Zentrale Kanalnormalisierung direkt nach dem String-Cleanup.
+    # Alle rein numerischen Werte - auch Werte, die pandas als Zahl einliest -
+    # werden zuverlässig unter "jazz" zusammengefasst.
+    df["Kanal"] = normalize_channel_values(df["Kanal"])
 
     # Fehlende Dringlichkeitsangaben bleiben unbekannt und werden nicht zu 0.
     if "Dringend" in df.columns:
@@ -397,6 +403,11 @@ if seite == "📊 KPI Dashboard 2026":
         df_filtered = df_filtered[
             df_filtered["Eingang"].dt.date.between(start_date, end_date)
         ]
+
+    # Letzte Schutzschicht vor jeder Auswertung und Darstellung.
+    # Damit werden auch ältere oder abweichende CSV-Versionen korrigiert.
+    df_2026["Kanal"] = normalize_channel_values(df_2026["Kanal"])
+    df_filtered["Kanal"] = normalize_channel_values(df_filtered["Kanal"])
 
     total_auftraege = len(df_filtered)
     deadline_konkret = df_filtered["Deadline_Kategorie"].eq("Konkrete Deadline")
