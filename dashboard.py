@@ -374,8 +374,17 @@ if seite == "📊 KPI Dashboard 2026":
         st.error("Es wurden keine gültigen Eingangsdaten für 2026 gefunden.")
         st.stop()
 
-    min_datum = gueltige_eingaenge.min().date()
-    max_datum = gueltige_eingaenge.max().date()
+    # Das Dashboard 2026 startet standardmäßig am 01.01.2026.
+    # Frühere Datensätze bleiben in der Quelle erhalten, werden aber im
+    # Standardzeitraum nicht angezeigt.
+    dashboard_start = pd.Timestamp("2026-01-01").date()
+    data_max_datum = gueltige_eingaenge.max().date()
+    if data_max_datum < dashboard_start:
+        st.error("Für 2026 wurden keine Eingänge ab dem 01.01.2026 gefunden.")
+        st.stop()
+
+    min_datum = dashboard_start
+    max_datum = data_max_datum
     datum_range = st.sidebar.date_input(
         "Zeitraum Eingang",
         value=(min_datum, max_datum),
