@@ -18,6 +18,7 @@ st.set_page_config(
 
 BASE_DIR = Path(__file__).resolve().parent
 FILE_2026 = BASE_DIR / "Liste_Aufgabe Doku_UeM_NEU-2026(2026).csv"
+FILE_2026_COMPARISON = BASE_DIR / "Liste_Aufgabe 2026 fuer KPis.xlsx"
 FILE_2025 = BASE_DIR / "Liste_Aufgabe 2025 fuer KPis.xlsx"
 FILE_COSTS = BASE_DIR / "Ueberblick_LS.xlsx"
 
@@ -251,6 +252,128 @@ def load_orders_2026() -> pd.DataFrame:
     return normalize_orders(df, "2026")
 
 
+INTERNAL_TRANSLATORS = {
+    "ADU": "Angelique",
+    "LBO": "Laura",
+    "LSP": "Lisa",
+    "MSZ": "Marie",
+    "MSI": "Martine",
+    "SRI": "Susan",
+    "JKI": "John",
+    "CMI": "Carsten",
+    "CHZ": "Christoph",
+    "FSC": "Franziska",
+    "AMZ": "Alba",
+    "MJI": "Maria",
+}
+EXTERNAL_TRANSLATORS = {"Cristina", "Marion"}
+AGENCY_LABELS = {"yabylon", "yaybylon"}
+AGENCY_WORD_RATES = {
+    "SL": 0.15,
+    "PL": 0.15,
+    "NO": 0.21,
+    "DA": 0.20,
+    "FI": 0.21,
+    "SV": 0.21,
+    "HR": 0.14,
+    "EL": 0.16,
+}
+AGENCY_HOURLY_RATE = 58.0
+LANGUAGE_COMPARISON_MAP = {"NW": "NO", "DK": "DA", "GR": "EL"}
+
+
+@st.cache_data(show_spinner=False)
+def load_comparison_orders_2026() -> pd.DataFrame:
+    """Lädt die Excel-Aufträge für den theoretischen Agenturkostenvergleich."""
+    df = pd.read_excel(FILE_2026_COMPARISON, sheet_name="2026", header=0)
+    df = clean_columns(df).dropna(how="all").copy()
+    df = ensure_columns(
+        df,
+        [
+            "Auftragsname", "Abteilung", "Auftragstyp", "Sprache", "Wörter",
+            "Stunden", "Eingang", "Translator",
+        ],
+    )
+
+    df["Eingang"] = pd.to_datetime(df["Eingang"], errors="coerce")
+    df["Monat"] = df["Eingang"].dt.to_period("M").astype("string")
+    df["Abteilung_Anzeige"] = (
+        df["Abteilung"].astype("string").str.strip()
+        .fillna("Nicht zugeordnet").replace("", "Nicht zugeordnet")
+    )
+    df["Translator_Roh"] = (
+        df["Translator"].astype("string").str.strip()
+        .fillna("Nicht angegeben").replace("", "Nicht angegeben")
+    )
+
+    def classify_translator(value):
+        if value in INTERNAL_TRANSLATORS:
+            return "Intern"
+        if value in EXTERNAL_TRANSLATORS:
+            return "Extern"
+        if str(value).casefold() in AGENCY_LABELS:
+            return "Agentur"
+        return "Nicht zugeordnet"
+
+    df["Translator_Typ"] = df["Translator_Roh"].map(classify_translator)
+    df["Übersetzer_Anzeige"] = df["Translator_Roh"].map(
+        lambda value: INTERNAL_TRANSLATORS.get(value, value)
+    )
+    df["Sprache_Roh"] = df["Sprache"].astype("string").str.strip().str.upper()
+    df["Sprache_Bewertung"] = df["Sprache_Roh"].replace(LANGUAGE_COMPARISON_MAP)
+    df["Wörter_Zahl"] = pd.to_numeric(df["Wörter"], errors="coerce")
+    df["Stunden_Zahl"] = pd.to_numeric(df["Stunden"], errors="coerce")
+    df["Preis_pro_Wort"] = df["Sprache_Bewertung"].map(AGENCY_WORD_RATES)
+    df["Theoretische_Agenturkosten"] = np.nan
+    df["Berechnungsbasis"] = "Nicht bewertet - keine Wörter/Stunden"
+
+    internal = df["Translator_Typ"].eq("Intern")
+    lektorat_mit_stunden = (
+        internal
+        & df["Auftragstyp"].astype("string").str.strip().str.casefold().eq("lektorat")
+        & df["Stunden_Zahl"].notna()
+    )
+    stunden_fallback = internal & df["Stunden_Zahl"].notna() & ~lektorat_mit_stunden
+    wort_basis = (
+        internal
+        & ~lektorat_mit_stunden
+        & df["Preis_pro_Wort"].notna()
+        & df["Wörter_Zahl"].notna()
+    )
+
+    df.loc[wort_basis, "Theoretische_Agenturkosten"] = (
+        df.loc[wort_basis, "Wörter_Zahl"] * df.loc[wort_basis, "Preis_pro_Wort"]
+    )
+    df.loc[wort_basis, "Berechnungsbasis"] = "Preis pro neues Wort"
+    df.loc[lektorat_mit_stunden, "Theoretische_Agenturkosten"] = (
+        df.loc[lektorat_mit_stunden, "Stunden_Zahl"] * AGENCY_HOURLY_RATE
+    )
+    df.loc[lektorat_mit_stunden, "Berechnungsbasis"] = "Stundenpreis (Lektorat)"
+    df.loc[stunden_fallback, "Theoretische_Agenturkosten"] = (
+        df.loc[stunden_fallback, "Stunden_Zahl"] * AGENCY_HOURLY_RATE
+    )
+    df.loc[stunden_fallback, "Berechnungsbasis"] = "Stundenpreis (kein Wortwert)"
+
+    df["Bewertung_Status"] = "Nicht bewertet - keine Wörter/Stunden"
+    df.loc[internal & df["Sprache_Bewertung"].isna(), "Bewertung_Status"] = (
+        "Nicht bewertet - Sprache nicht in Preisliste"
+    )
+    df.loc[internal & df["Sprache_Bewertung"].notna(), "Bewertung_Status"] = (
+        "Nicht bewertet - Wörter/Stunden fehlen"
+    )
+    df.loc[df["Theoretische_Agenturkosten"].notna(), "Bewertung_Status"] = "Bewertet"
+    df.loc[~internal & df["Translator_Typ"].eq("Extern"), "Bewertung_Status"] = (
+        "Nicht relevant - externe Übersetzung"
+    )
+    df.loc[~internal & df["Translator_Typ"].eq("Agentur"), "Bewertung_Status"] = (
+        "Nicht relevant - Agenturauftrag"
+    )
+    df.loc[~internal & df["Translator_Typ"].eq("Nicht zugeordnet"), "Bewertung_Status"] = (
+        "Nicht bewertet - Übersetzer nicht zugeordnet"
+    )
+    return df
+
+
 @st.cache_data(show_spinner=False)
 def load_orders_2025() -> pd.DataFrame:
     df = pd.read_excel(FILE_2025, sheet_name="2025", header=0)
@@ -336,6 +459,7 @@ seite = st.sidebar.radio(
         "📊 KPI Dashboard 2026",
         "📈 Jahresvergleich 2025 vs 2026",
         "💰 Kosten Übersicht",
+        "💶 Einsparung interne Übersetzer",
         "📘 KPI-Methodik & Anleitung",
     ],
 )
@@ -930,6 +1054,286 @@ elif seite == "📈 Jahresvergleich 2025 vs 2026":
 
 # ============================================================
 # SEITE 4: KPI-METHODIK & ANLEITUNG
+# ============================================================
+elif seite == "💶 Einsparung interne Übersetzer":
+    st.title("Einsparung durch interne Übersetzer")
+    st.caption(
+        "Theoretische vermiedene Yabylon-Agenturkosten auf Basis der aktuellen Aufträge "
+        f" | Aktualisiert: {datetime.now():%d.%m.%Y %H:%M}"
+    )
+
+    try:
+        comparison_orders = load_comparison_orders_2026()
+    except (FileNotFoundError, KeyError, ValueError) as exc:
+        show_load_error("Die Excel-Aufträge für den Kostenvergleich", exc)
+
+    st.info(
+        "Diese Seite zeigt zunächst die theoretischen Agenturkosten, die vermieden worden wären, "
+        "wenn intern bearbeitete Aufträge an Yabylon vergeben worden wären. Interne Personal- "
+        "und Gemeinkosten sind noch nicht abgezogen. Alle Beträge sind netto, also zzgl. MwSt."
+    )
+
+    valid_dates = comparison_orders.loc[
+        comparison_orders["Eingang"].between(
+            pd.Timestamp("2026-01-01"), pd.Timestamp("2026-12-31")
+        ),
+        "Eingang",
+    ].dropna()
+    if valid_dates.empty:
+        st.warning("Für 2026 wurden keine gültigen Eingangsdaten gefunden.")
+        st.stop()
+
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Filter Einsparung")
+    date_range = st.sidebar.date_input(
+        "Zeitraum Eingang",
+        value=(pd.Timestamp("2026-01-01").date(), valid_dates.max().date()),
+        min_value=pd.Timestamp("2026-01-01").date(),
+        max_value=valid_dates.max().date(),
+        key="comparison_date_range",
+    )
+    translator_options = ["Alle"] + sorted(
+        comparison_orders.loc[
+            comparison_orders["Translator_Typ"].eq("Intern"), "Übersetzer_Anzeige"
+        ].dropna().unique().tolist()
+    )
+    translator_filter = st.sidebar.selectbox(
+        "Interne Übersetzer", translator_options, key="comparison_translator"
+    )
+    language_options = ["Alle"] + sorted(
+        comparison_orders["Sprache_Roh"].dropna().unique().tolist()
+    )
+    language_filter = st.sidebar.selectbox(
+        "Zielsprache", language_options, key="comparison_language"
+    )
+    department_options = ["Alle"] + sorted(
+        comparison_orders["Abteilung_Anzeige"].dropna().unique().tolist()
+    )
+    department_filter = st.sidebar.selectbox(
+        "Abteilung", department_options, key="comparison_department"
+    )
+    order_type_options = ["Alle"] + sorted(
+        comparison_orders["Auftragstyp"].dropna().astype(str).unique().tolist()
+    )
+    order_type_filter = st.sidebar.selectbox(
+        "Auftragstyp", order_type_options, key="comparison_order_type"
+    )
+
+    comparison_filtered = comparison_orders.copy()
+    comparison_filtered = comparison_filtered[
+        comparison_filtered["Eingang"].dt.date.between(
+            date_range[0], date_range[1]
+        )
+    ] if isinstance(date_range, (tuple, list)) and len(date_range) == 2 else comparison_filtered.iloc[0:0]
+    if translator_filter != "Alle":
+        comparison_filtered = comparison_filtered[
+            comparison_filtered["Übersetzer_Anzeige"] == translator_filter
+        ]
+    if language_filter != "Alle":
+        comparison_filtered = comparison_filtered[
+            comparison_filtered["Sprache_Roh"] == language_filter
+        ]
+    if department_filter != "Alle":
+        comparison_filtered = comparison_filtered[
+            comparison_filtered["Abteilung_Anzeige"] == department_filter
+        ]
+    if order_type_filter != "Alle":
+        comparison_filtered = comparison_filtered[
+            comparison_filtered["Auftragstyp"].astype("string") == order_type_filter
+        ]
+
+    internal_orders = comparison_filtered[
+        comparison_filtered["Translator_Typ"].eq("Intern")
+    ].copy()
+    evaluated = internal_orders[internal_orders["Theoretische_Agenturkosten"].notna()].copy()
+    total_avoided_cost = evaluated["Theoretische_Agenturkosten"].sum()
+    evaluated_count = len(evaluated)
+    internal_count = len(internal_orders)
+    evaluation_rate = evaluated_count / internal_count * 100 if internal_count else np.nan
+    not_evaluated_count = internal_count - evaluated_count
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("Interne Aufträge", format_number(internal_count))
+    k2.metric("Bewertbare interne Aufträge", format_number(evaluated_count))
+    k3.metric("Vermiedene Agenturkosten", format_euro(total_avoided_cost))
+    k4.metric(
+        "Bewertungsquote",
+        f"{evaluation_rate:.1f}%" if pd.notna(evaluation_rate) else "-",
+    )
+    k5.metric("Nicht bewertet", format_number(not_evaluated_count))
+
+    if internal_orders.empty:
+        st.warning("Im aktuellen Filter wurden keine internen Aufträge gefunden.")
+        st.stop()
+
+    st.subheader("Auftragsverteilung nach Übersetzer-Typ")
+    type_summary = (
+        comparison_filtered["Translator_Typ"]
+        .value_counts()
+        .rename_axis("Übersetzer-Typ")
+        .reset_index(name="Aufträge")
+    )
+    fig = px.bar(
+        type_summary,
+        x="Übersetzer-Typ",
+        y="Aufträge",
+        color="Übersetzer-Typ",
+        labels={"Übersetzer-Typ": "Übersetzer-Typ", "Aufträge": "Aufträge"},
+        color_discrete_map={
+            "Intern": "#70AD47",
+            "Extern": "#ED7D31",
+            "Agentur": "#4472C4",
+            "Nicht zugeordnet": "#A5A5A5",
+        },
+    )
+    fig.update_layout(showlegend=False)
+    st.plotly_chart(fig, use_container_width=True)
+
+    chart_left, chart_right = st.columns(2)
+    with chart_left:
+        st.subheader("Vermiedene Agenturkosten pro internem Übersetzer")
+        by_translator = (
+            evaluated.groupby("Übersetzer_Anzeige", dropna=False)[
+                "Theoretische_Agenturkosten"
+            ]
+            .sum()
+            .rename("Vermiedene Kosten")
+            .reset_index()
+            .sort_values("Vermiedene Kosten", ascending=True)
+        )
+        if by_translator.empty:
+            st.info("Keine bewertbaren internen Aufträge im aktuellen Filter.")
+        else:
+            fig = px.bar(
+                by_translator,
+                x="Vermiedene Kosten",
+                y="Übersetzer_Anzeige",
+                orientation="h",
+                labels={
+                    "Vermiedene Kosten": "Theoretische Agenturkosten (€)",
+                    "Übersetzer_Anzeige": "Interner Übersetzer",
+                },
+                color_discrete_sequence=["#70AD47"],
+            )
+            fig.update_layout(showlegend=False)
+            st.plotly_chart(fig, use_container_width=True)
+
+    with chart_right:
+        st.subheader("Vermiedene Agenturkosten pro Zielsprache")
+        by_language = (
+            evaluated.groupby("Sprache_Roh", dropna=False)[
+                "Theoretische_Agenturkosten"
+            ]
+            .sum()
+            .rename("Vermiedene Kosten")
+            .reset_index()
+            .sort_values("Vermiedene Kosten", ascending=True)
+        )
+        if by_language.empty:
+            st.info("Keine bewertbaren Sprachen im aktuellen Filter.")
+        else:
+            fig = px.bar(
+                by_language,
+                x="Vermiedene Kosten",
+                y="Sprache_Roh",
+                orientation="h",
+                labels={
+                    "Vermiedene Kosten": "Theoretische Agenturkosten (€)",
+                    "Sprache_Roh": "Zielsprache",
+                },
+                color_discrete_sequence=["#5B9BD5"],
+            )
+            fig.update_layout(showlegend=False)
+            st.plotly_chart(fig, use_container_width=True)
+
+    monthly_cost = (
+        evaluated.groupby("Monat", dropna=False)["Theoretische_Agenturkosten"]
+        .sum()
+        .rename("Vermiedene Kosten")
+        .reset_index()
+        .sort_values("Monat")
+    )
+    st.subheader("Vermiedene Agenturkosten pro Monat")
+    if monthly_cost.empty:
+        st.info("Keine bewertbaren Kosten im aktuellen Filter.")
+    else:
+        fig = px.bar(
+            monthly_cost,
+            x="Monat",
+            y="Vermiedene Kosten",
+            labels={"Monat": "Monat des Eingangs", "Vermiedene Kosten": "Euro"},
+            color_discrete_sequence=["#8064A2"],
+        )
+        fig.update_layout(showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
+
+    with st.expander("Nicht bewertete interne Aufträge erklären"):
+        not_evaluated = (
+            internal_orders[internal_orders["Theoretische_Agenturkosten"].isna()]
+            .groupby("Bewertung_Status", dropna=False)
+            .size()
+            .rename("Aufträge")
+            .reset_index()
+            .sort_values("Aufträge", ascending=False)
+        )
+        st.dataframe(not_evaluated, use_container_width=True, hide_index=True)
+        st.markdown(
+            "**Sprachmapping:** `NW` wird als Norwegisch (`NO`), `DK` als Dänisch "
+            "(`DA`) und `GR` als Griechisch (`EL`) behandelt. Sprachen ohne Preis in "
+            "der Preisliste werden nicht berechnet. Für Lektorat bzw. fehlende Wortwerte "
+            "wird der Stundenpreis von 58 € verwendet, wenn Stunden vorhanden sind."
+        )
+
+    detail_columns = [
+        "Eingang", "Auftragsname", "Übersetzer_Anzeige", "Translator_Roh",
+        "Translator_Typ", "Sprache_Roh", "Sprache_Bewertung", "Auftragstyp",
+        "Wörter_Zahl", "Stunden_Zahl", "Preis_pro_Wort", "Berechnungsbasis",
+        "Theoretische_Agenturkosten", "Bewertung_Status", "Abteilung_Anzeige",
+    ]
+    details = comparison_filtered[
+        [column for column in detail_columns if column in comparison_filtered.columns]
+    ].copy()
+    details = details.rename(
+        columns={
+            "Übersetzer_Anzeige": "Übersetzer",
+            "Translator_Roh": "Originalwert Übersetzer",
+            "Sprache_Roh": "Sprache",
+            "Sprache_Bewertung": "Sprache für Preislogik",
+            "Wörter_Zahl": "Wörter",
+            "Stunden_Zahl": "Stunden",
+            "Preis_pro_Wort": "Preis pro Wort (€)",
+            "Theoretische_Agenturkosten": "Theoretische Agenturkosten (€)",
+            "Abteilung_Anzeige": "Abteilung",
+        }
+    )
+    with st.expander("Auftragsdetails und Export"):
+        st.dataframe(details, use_container_width=True, hide_index=True)
+        comparison_csv = details.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+        st.download_button(
+            "Vergleich als CSV herunterladen",
+            data=comparison_csv,
+            file_name="Einsparungsvergleich_interne_Uebersetzer_2026.csv",
+            mime="text/csv",
+        )
+
+    with st.expander("Methodik und Annahmen"):
+        st.markdown(
+            "- Grundlage: Aufträge ab **01.01.2026** aus der Excel-Datei mit den aktuellen Aufträgen.\n"
+            "- Interne Übersetzer: die hinterlegte Namens-/Kürzelliste; `Cristina` und `Marion` gelten als extern.\n"
+            "- `Yabylon` wird als Agentur normalisiert.\n"
+            "- Agenturkosten = numerische Wörter × Preis pro neues Wort.\n"
+            "- Bei Lektorat oder fehlendem Wortwert wird, sofern Stunden vorhanden sind, "
+            "der Stundenpreis von 58 € verwendet.\n"
+            "- Nicht in der Preisliste enthaltene Sprachen werden bei der wortbasierten Bewertung separat als nicht bewertet ausgewiesen.\n"
+            "- Für Lektorat wird der separate Stundenpreis von 58 € unabhängig von der Zielsprache verwendet; "
+            "bei fehlendem Wortwert gilt er als Fallback, sofern Stunden vorhanden sind.\n"
+            "- Die Auswertung ist eine theoretische Bruttobetrachtung; interne Personalkosten, "
+            "Mehrwertsteuer und tatsächliche Rechnungsabweichungen sind nicht enthalten."
+        )
+
+
+# ============================================================
+# SEITE 5: KPI-METHODIK & ANLEITUNG
 # ============================================================
 elif seite == "📘 KPI-Methodik & Anleitung":
     st.title("KPI-Methodik & Anleitung")
