@@ -31,6 +31,7 @@ STANDARD_ORDER_COLUMNS = [
 
 LANGUAGES_2025 = ["EN", "IT", "ES", "NL", "PL", "PT", "CZ", "SL"]
 LANGUAGES_2026 = LANGUAGES_2025 + ["SV", "FI", "NW", "DA", "GR"]
+COMPARISON_LANGUAGES = ["PL", "IT", "NL"]
 
 
 # ============================================================
@@ -459,7 +460,7 @@ seite = st.sidebar.radio(
         "📊 KPI Dashboard 2026",
         "📈 Jahresvergleich 2025 vs 2026",
         "💰 Kosten Übersicht",
-        "💶 Einsparung interne Übersetzer",
+        "💶 Einsparungsvergleich PL / IT / NL",
         "📘 KPI-Methodik & Anleitung",
     ],
 )
@@ -1055,10 +1056,10 @@ elif seite == "📈 Jahresvergleich 2025 vs 2026":
 # ============================================================
 # SEITE 4: KPI-METHODIK & ANLEITUNG
 # ============================================================
-elif seite == "💶 Einsparung interne Übersetzer":
-    st.title("Einsparung durch interne Übersetzer")
+elif seite == "💶 Einsparungsvergleich PL / IT / NL":
+    st.title("Einsparungsvergleich nach Zielsprache")
     st.caption(
-        "Theoretische vermiedene Yabylon-Agenturkosten auf Basis der aktuellen Aufträge "
+        "Vergleich der theoretisch vermiedenen Yabylon-Agenturkosten für PL, IT und NL "
         f" | Aktualisiert: {datetime.now():%d.%m.%Y %H:%M}"
     )
 
@@ -1068,10 +1069,17 @@ elif seite == "💶 Einsparung interne Übersetzer":
         show_load_error("Die Excel-Aufträge für den Kostenvergleich", exc)
 
     st.info(
-        "Diese Seite zeigt zunächst die theoretischen Agenturkosten, die vermieden worden wären, "
-        "wenn intern bearbeitete Aufträge an Yabylon vergeben worden wären. Interne Personal- "
-        "und Gemeinkosten sind noch nicht abgezogen. Alle Beträge sind netto, also zzgl. MwSt."
+        "Diese Seite betrachtet ausschließlich die Zielsprachen PL, IT und NL. DE und alle "
+        "anderen Sprachen werden hier nicht berücksichtigt. Die theoretischen Agenturkosten "
+        "zeigen, was bei einer Vergabe an Yabylon angefallen wäre; interne Personal- und "
+        "Gemeinkosten sind noch nicht abgezogen. Alle Beträge sind netto, also zzgl. MwSt. "
+        "Für IT liegt in der hinterlegten Preisliste kein Wortpreis vor und IT wird deshalb "
+        "als nicht bewertet ausgewiesen. NL kann bei Lektorat über den Stundenpreis bewertet werden."
     )
+
+    comparison_orders = comparison_orders[
+        comparison_orders["Sprache_Roh"].isin(COMPARISON_LANGUAGES)
+    ].copy()
 
     valid_dates = comparison_orders.loc[
         comparison_orders["Eingang"].between(
@@ -1092,17 +1100,7 @@ elif seite == "💶 Einsparung interne Übersetzer":
         max_value=valid_dates.max().date(),
         key="comparison_date_range",
     )
-    translator_options = ["Alle"] + sorted(
-        comparison_orders.loc[
-            comparison_orders["Translator_Typ"].eq("Intern"), "Übersetzer_Anzeige"
-        ].dropna().unique().tolist()
-    )
-    translator_filter = st.sidebar.selectbox(
-        "Interne Übersetzer", translator_options, key="comparison_translator"
-    )
-    language_options = ["Alle"] + sorted(
-        comparison_orders["Sprache_Roh"].dropna().unique().tolist()
-    )
+    language_options = ["Alle"] + COMPARISON_LANGUAGES
     language_filter = st.sidebar.selectbox(
         "Zielsprache", language_options, key="comparison_language"
     )
@@ -1125,10 +1123,6 @@ elif seite == "💶 Einsparung interne Übersetzer":
             date_range[0], date_range[1]
         )
     ] if isinstance(date_range, (tuple, list)) and len(date_range) == 2 else comparison_filtered.iloc[0:0]
-    if translator_filter != "Alle":
-        comparison_filtered = comparison_filtered[
-            comparison_filtered["Übersetzer_Anzeige"] == translator_filter
-        ]
     if language_filter != "Alle":
         comparison_filtered = comparison_filtered[
             comparison_filtered["Sprache_Roh"] == language_filter
@@ -1191,32 +1185,29 @@ elif seite == "💶 Einsparung interne Übersetzer":
 
     chart_left, chart_right = st.columns(2)
     with chart_left:
-        st.subheader("Vermiedene Agenturkosten pro internem Übersetzer")
-        by_translator = (
-            evaluated.groupby("Übersetzer_Anzeige", dropna=False)[
-                "Theoretische_Agenturkosten"
-            ]
-            .sum()
-            .rename("Vermiedene Kosten")
+        st.subheader("Interne Aufträge pro Zielsprache")
+        by_language_count = (
+            internal_orders.groupby("Sprache_Roh", dropna=False)
+            .size()
+            .rename("Aufträge")
             .reset_index()
-            .sort_values("Vermiedene Kosten", ascending=True)
+            .sort_values("Aufträge", ascending=True)
         )
-        if by_translator.empty:
-            st.info("Keine bewertbaren internen Aufträge im aktuellen Filter.")
-        else:
-            fig = px.bar(
-                by_translator,
-                x="Vermiedene Kosten",
-                y="Übersetzer_Anzeige",
-                orientation="h",
-                labels={
-                    "Vermiedene Kosten": "Theoretische Agenturkosten (€)",
-                    "Übersetzer_Anzeige": "Interner Übersetzer",
-                },
-                color_discrete_sequence=["#70AD47"],
-            )
-            fig.update_layout(showlegend=False)
-            st.plotly_chart(fig, use_container_width=True)
+        fig = px.bar(
+            by_language_count,
+            x="Aufträge",
+            y="Sprache_Roh",
+            orientation="h",
+            text="Aufträge",
+            labels={
+                "Aufträge": "Interne Aufträge",
+                "Sprache_Roh": "Zielsprache",
+            },
+            color_discrete_sequence=["#70AD47"],
+        )
+        fig.update_traces(textposition="outside")
+        fig.update_layout(showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
 
     with chart_right:
         st.subheader("Vermiedene Agenturkosten pro Zielsprache")
@@ -1278,25 +1269,24 @@ elif seite == "💶 Einsparung interne Übersetzer":
         )
         st.dataframe(not_evaluated, use_container_width=True, hide_index=True)
         st.markdown(
-            "**Sprachmapping:** `NW` wird als Norwegisch (`NO`), `DK` als Dänisch "
-            "(`DA`) und `GR` als Griechisch (`EL`) behandelt. Sprachen ohne Preis in "
-            "der Preisliste werden nicht berechnet. Für Lektorat bzw. fehlende Wortwerte "
-            "wird der Stundenpreis von 58 € verwendet, wenn Stunden vorhanden sind."
+            "**Sprachlogik:** Auf dieser Seite werden ausschließlich PL, IT und NL betrachtet; DE wird vollständig ausgeschlossen. "
+            "Für PL wird der Preis pro neues Wort aus der Preisliste verwendet. Für IT ist in der "
+            "hinterlegten Preisliste kein Wortpreis vorhanden und IT wird deshalb als nicht bewertet "
+            "ausgewiesen. NL kann bei Lektorat über den Stundenpreis von 58 € bewertet werden. "
+            "Andere Sprachen werden nicht in die Seite aufgenommen."
         )
 
     detail_columns = [
-        "Eingang", "Auftragsname", "Übersetzer_Anzeige", "Translator_Roh",
-        "Translator_Typ", "Sprache_Roh", "Sprache_Bewertung", "Auftragstyp",
-        "Wörter_Zahl", "Stunden_Zahl", "Preis_pro_Wort", "Berechnungsbasis",
-        "Theoretische_Agenturkosten", "Bewertung_Status", "Abteilung_Anzeige",
+        "Eingang", "Auftragsname", "Translator_Typ", "Sprache_Roh",
+        "Sprache_Bewertung", "Auftragstyp", "Wörter_Zahl", "Stunden_Zahl",
+        "Preis_pro_Wort", "Berechnungsbasis", "Theoretische_Agenturkosten",
+        "Bewertung_Status", "Abteilung_Anzeige",
     ]
     details = comparison_filtered[
         [column for column in detail_columns if column in comparison_filtered.columns]
     ].copy()
     details = details.rename(
         columns={
-            "Übersetzer_Anzeige": "Übersetzer",
-            "Translator_Roh": "Originalwert Übersetzer",
             "Sprache_Roh": "Sprache",
             "Sprache_Bewertung": "Sprache für Preislogik",
             "Wörter_Zahl": "Wörter",
@@ -1319,7 +1309,9 @@ elif seite == "💶 Einsparung interne Übersetzer":
     with st.expander("Methodik und Annahmen"):
         st.markdown(
             "- Grundlage: Aufträge ab **01.01.2026** aus der Excel-Datei mit den aktuellen Aufträgen.\n"
-            "- Interne Übersetzer: die hinterlegte Namens-/Kürzelliste; `Cristina` und `Marion` gelten als extern.\n"
+            "- Betrachtete Zielsprachen: ausschließlich **PL, IT und NL**; **DE wird ausgeschlossen**.\n"
+            "- Interne Aufträge werden über die hinterlegte Kürzelliste erkannt; Personen werden in den "
+            "Auswertungen nicht angezeigt.\n"
             "- `Yabylon` wird als Agentur normalisiert.\n"
             "- Agenturkosten = numerische Wörter × Preis pro neues Wort.\n"
             "- Bei Lektorat oder fehlendem Wortwert wird, sofern Stunden vorhanden sind, "
