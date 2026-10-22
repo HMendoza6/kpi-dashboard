@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 from datetime import datetime
 
@@ -18,9 +19,18 @@ st.set_page_config(
 
 BASE_DIR = Path(__file__).resolve().parent
 FILE_2026 = BASE_DIR / "Liste_Aufgabe Doku_UeM_NEU-2026(2026).csv"
-FILE_2026_COMPARISON = BASE_DIR / "Liste_Aufgabe 2026 fuer KPis.xlsx"
+FILE_2026_COMPARISON = BASE_DIR / "Liste_Aufgabe Doku_UeM_NEU-2026.xlsx"
+FILE_2026_COMPARISON_LEGACY = BASE_DIR / "Liste_Aufgabe 2026 fuer KPis.xlsx"
 FILE_2025 = BASE_DIR / "Liste_Aufgabe 2025 fuer KPis.xlsx"
-FILE_COSTS = BASE_DIR / "Ueberblick_LS.xlsx"
+COST_FILE_CANDIDATES = [
+    BASE_DIR / "Ueberblick_LS (2).xlsx",
+    BASE_DIR / "Ueberblick_LS.xlsx",
+]
+# Die aktuelle Datei wird bevorzugt; der zweite Pfad ist der Fallback für ältere Exporte.
+FILE_COSTS = next(
+    (path for path in COST_FILE_CANDIDATES if path.exists()),
+    COST_FILE_CANDIDATES[0],
+)
 
 STANDARD_ORDER_COLUMNS = [
     "Auftragsname", "Auftraggeber", "Abteilung", "Auftragstyp", "Sprache",
@@ -286,13 +296,25 @@ LANGUAGE_COMPARISON_MAP = {"NW": "NO", "DK": "DA", "GR": "EL"}
 @st.cache_data(show_spinner=False)
 def load_comparison_orders_2026() -> pd.DataFrame:
     """Lädt die Excel-Aufträge für den theoretischen Agenturkostenvergleich."""
-    df = pd.read_excel(FILE_2026_COMPARISON, sheet_name="2026", header=0)
+    source_file = (
+        FILE_2026_COMPARISON
+        if FILE_2026_COMPARISON.exists()
+        else FILE_2026_COMPARISON_LEGACY
+    )
+    df = pd.read_excel(source_file, sheet_name="2026", header=0)
     df = clean_columns(df).dropna(how="all").copy()
+    df = df.rename(
+        columns={
+            "Spalte1": "Auftragsname",
+            "Übersetzung": "Translator",
+            "Verantwortlich": "Verantwörtlich",
+        }
+    )
     df = ensure_columns(
         df,
         [
             "Auftragsname", "Abteilung", "Auftragstyp", "Sprache", "Wörter",
-            "Stunden", "Eingang", "Translator",
+            "Stunden", "Zeit", "Eingang", "Translator",
         ],
     )
 
@@ -308,60 +330,85 @@ def load_comparison_orders_2026() -> pd.DataFrame:
     )
 
     def classify_translator(value):
-        if value in INTERNAL_TRANSLATORS:
-            return "Intern"
-        if value in EXTERNAL_TRANSLATORS:
-            return "Extern"
-        if str(value).casefold() in AGENCY_LABELS:
+        text = "" if pd.isna(value) else str(value).strip().casefold()
+        internal_names = {
+            item.casefold()
+            for item in list(INTERNAL_TRANSLATORS.keys())
+            + list(INTERNAL_TRANSLATORS.values())
+        }
+        if any(label in text for label in AGENCY_LABELS):
             return "Agentur"
+        external_names = {item.casefold() for item in EXTERNAL_TRANSLATORS}
+        if any(name in text for name in external_names):
+            return "Extern"
+        tokens = (
+            text.replace("/", " ")
+            .replace("?", " ")
+            .replace("-", " ")
+            .split()
+        )
+        if any(name in tokens for name in internal_names):
+            return "Intern"
         return "Nicht zugeordnet"
 
     df["Translator_Typ"] = df["Translator_Roh"].map(classify_translator)
-    df["Übersetzer_Anzeige"] = df["Translator_Roh"].map(
-        lambda value: INTERNAL_TRANSLATORS.get(value, value)
-    )
+    df["Übersetzer_Anzeige"] = df["Translator_Roh"]
     df["Sprache_Roh"] = df["Sprache"].astype("string").str.strip().str.upper()
     df["Sprache_Bewertung"] = df["Sprache_Roh"].replace(LANGUAGE_COMPARISON_MAP)
+    # DE wird für den Einsparungsvergleich vollständig ausgeschlossen.
+    df = df.loc[df["Sprache_Roh"].ne("DE")].copy()
     df["Wörter_Zahl"] = pd.to_numeric(df["Wörter"], errors="coerce")
+    def parse_time_hours(value):
+        if pd.isna(value) or str(value).strip() == "":
+            return np.nan
+        text = str(value).strip().casefold().replace(",", ".")
+        for marker in ["stunden", "stunde", "std", "minutes", "minute", "min"]:
+            text = text.replace(marker, " ")
+        first_token = text.split()[0] if text.split() else ""
+        try:
+            number = float(first_token)
+        except ValueError:
+            return np.nan
+        if "stunde" in str(value).casefold() or "std" in str(value).casefold():
+            return number
+        # In der aktuellen Excel steht 'Zeit' überwiegend in Minuten.
+        return number / 60
+
+    df["Zeit_Stunden"] = df["Zeit"].map(parse_time_hours)
     df["Stunden_Zahl"] = pd.to_numeric(df["Stunden"], errors="coerce")
+    df["Zeit_Stunden"] = df["Zeit_Stunden"].fillna(df["Stunden_Zahl"])
     df["Preis_pro_Wort"] = df["Sprache_Bewertung"].map(AGENCY_WORD_RATES)
     df["Theoretische_Agenturkosten"] = np.nan
-    df["Berechnungsbasis"] = "Nicht bewertet - keine Wörter/Stunden"
+    df["Berechnungsbasis"] = "Nicht bewertet - keine Wörter/Zeit"
 
     internal = df["Translator_Typ"].eq("Intern")
-    lektorat_mit_stunden = (
-        internal
-        & df["Auftragstyp"].astype("string").str.strip().str.casefold().eq("lektorat")
-        & df["Stunden_Zahl"].notna()
-    )
-    stunden_fallback = internal & df["Stunden_Zahl"].notna() & ~lektorat_mit_stunden
     wort_basis = (
         internal
-        & ~lektorat_mit_stunden
         & df["Preis_pro_Wort"].notna()
         & df["Wörter_Zahl"].notna()
     )
+    stunden_fallback = internal & df["Wörter_Zahl"].isna() & df["Zeit_Stunden"].notna()
 
     df.loc[wort_basis, "Theoretische_Agenturkosten"] = (
         df.loc[wort_basis, "Wörter_Zahl"] * df.loc[wort_basis, "Preis_pro_Wort"]
     )
     df.loc[wort_basis, "Berechnungsbasis"] = "Preis pro neues Wort"
-    df.loc[lektorat_mit_stunden, "Theoretische_Agenturkosten"] = (
-        df.loc[lektorat_mit_stunden, "Stunden_Zahl"] * AGENCY_HOURLY_RATE
-    )
-    df.loc[lektorat_mit_stunden, "Berechnungsbasis"] = "Stundenpreis (Lektorat)"
     df.loc[stunden_fallback, "Theoretische_Agenturkosten"] = (
-        df.loc[stunden_fallback, "Stunden_Zahl"] * AGENCY_HOURLY_RATE
+        df.loc[stunden_fallback, "Zeit_Stunden"] * AGENCY_HOURLY_RATE
     )
-    df.loc[stunden_fallback, "Berechnungsbasis"] = "Stundenpreis (kein Wortwert)"
+    df.loc[stunden_fallback, "Berechnungsbasis"] = "Stundenpreis aus Zeitangabe"
 
-    df["Bewertung_Status"] = "Nicht bewertet - keine Wörter/Stunden"
-    df.loc[internal & df["Sprache_Bewertung"].isna(), "Bewertung_Status"] = (
-        "Nicht bewertet - Sprache nicht in Preisliste"
-    )
-    df.loc[internal & df["Sprache_Bewertung"].notna(), "Bewertung_Status"] = (
-        "Nicht bewertet - Wörter/Stunden fehlen"
-    )
+    df["Bewertung_Status"] = "Nicht bewertet - keine Wörter/Zeit"
+    df.loc[
+        internal & df["Preis_pro_Wort"].isna() & df["Zeit_Stunden"].isna(),
+        "Bewertung_Status",
+    ] = "Nicht bewertet - Sprache nicht in Preisliste"
+    df.loc[
+        internal & df["Preis_pro_Wort"].notna()
+        & df["Wörter_Zahl"].isna()
+        & df["Zeit_Stunden"].isna(),
+        "Bewertung_Status",
+    ] = "Nicht bewertet - Wörter/Zeit fehlen"
     df.loc[df["Theoretische_Agenturkosten"].notna(), "Bewertung_Status"] = "Bewertet"
     df.loc[~internal & df["Translator_Typ"].eq("Extern"), "Bewertung_Status"] = (
         "Nicht relevant - externe Übersetzung"
@@ -398,8 +445,16 @@ def load_costs(sheet_name: str, year: str) -> pd.DataFrame:
     if "Datum" not in df.columns:
         raise KeyError("Die Kostentabelle enthält keine Spalte 'Datum'.")
 
-    df["Datum"] = pd.to_datetime(df["Datum"], errors="coerce")
+    df["Datum"] = pd.to_datetime(
+        df["Datum"], errors="coerce", dayfirst=True
+    )
     df = df.dropna(subset=["Datum"]).copy()
+    # Nur Datensätze des ausgewählten Jahres berücksichtigen.
+    df = df[df["Datum"].dt.year == int(year)].copy()
+    # Zukünftige Rechnungsdaten werden nicht in den aktuellen Kostenstand aufgenommen.
+    # Dadurch können auch fehlerhaft interpretierte oder vorab eingetragene Termine
+    # keinen zukünftigen Monat im Dashboard erzeugen.
+    df = df[df["Datum"] <= pd.Timestamp(datetime.now().date())].copy()
     df["Monat"] = df["Datum"].dt.to_period("M").astype("string")
     df["Jahr"] = year
 
@@ -570,7 +625,6 @@ if seite == "📊 KPI Dashboard 2026":
 
     st.title("KPI Dashboard - Language Services")
     st.caption(
-        f"Datenstand Eingang: {df_2026['Eingang'].max():%d.%m.%Y} | "
         f"Dashboard aktualisiert: {datetime.now():%d.%m.%Y %H:%M}"
     )
 
@@ -1278,7 +1332,7 @@ elif seite == "💶 Einsparungsvergleich PL / IT / NL":
 
     detail_columns = [
         "Eingang", "Auftragsname", "Translator_Typ", "Sprache_Roh",
-        "Sprache_Bewertung", "Auftragstyp", "Wörter_Zahl", "Stunden_Zahl",
+        "Sprache_Bewertung", "Auftragstyp", "Wörter_Zahl", "Zeit_Stunden",
         "Preis_pro_Wort", "Berechnungsbasis", "Theoretische_Agenturkosten",
         "Bewertung_Status", "Abteilung_Anzeige",
     ]
@@ -1290,7 +1344,7 @@ elif seite == "💶 Einsparungsvergleich PL / IT / NL":
             "Sprache_Roh": "Sprache",
             "Sprache_Bewertung": "Sprache für Preislogik",
             "Wörter_Zahl": "Wörter",
-            "Stunden_Zahl": "Stunden",
+            "Zeit_Stunden": "Zeit (Stunden)",
             "Preis_pro_Wort": "Preis pro Wort (€)",
             "Theoretische_Agenturkosten": "Theoretische Agenturkosten (€)",
             "Abteilung_Anzeige": "Abteilung",
@@ -1308,19 +1362,17 @@ elif seite == "💶 Einsparungsvergleich PL / IT / NL":
 
     with st.expander("Methodik und Annahmen"):
         st.markdown(
-            "- Grundlage: Aufträge ab **01.01.2026** aus der Excel-Datei mit den aktuellen Aufträgen.\n"
-            "- Betrachtete Zielsprachen: ausschließlich **PL, IT und NL**; **DE wird ausgeschlossen**.\n"
-            "- Interne Aufträge werden über die hinterlegte Kürzelliste erkannt; Personen werden in den "
-            "Auswertungen nicht angezeigt.\n"
-            "- `Yabylon` wird als Agentur normalisiert.\n"
-            "- Agenturkosten = numerische Wörter × Preis pro neues Wort.\n"
-            "- Bei Lektorat oder fehlendem Wortwert wird, sofern Stunden vorhanden sind, "
-            "der Stundenpreis von 58 € verwendet.\n"
-            "- Nicht in der Preisliste enthaltene Sprachen werden bei der wortbasierten Bewertung separat als nicht bewertet ausgewiesen.\n"
-            "- Für Lektorat wird der separate Stundenpreis von 58 € unabhängig von der Zielsprache verwendet; "
-            "bei fehlendem Wortwert gilt er als Fallback, sofern Stunden vorhanden sind.\n"
-            "- Die Auswertung ist eine theoretische Bruttobetrachtung; interne Personalkosten, "
-            "Mehrwertsteuer und tatsächliche Rechnungsabweichungen sind nicht enthalten."
+            "- Grundlage: aktuelle Excel-Aufträge ab **01.01.2026**.\n"
+            "- **DE-Aufträge werden vollständig ausgeschlossen**; PL, IT und NL werden separat verglichen.\n"
+            "- Interne Aufträge werden über die Angaben in `Übersetzung` erkannt; Personen werden in den "
+            "Auswertungen nicht einzeln dargestellt.\n"
+            "- Agenturkosten = Wörter × Preis pro neues Wort aus der Preisliste.\n"
+            "- Wenn keine Wörter vorhanden sind, wird eine vorhandene `Zeit`-Angabe als Minuten "
+            "interpretiert und mit 58 € pro Stunde bewertet.\n"
+            "- Nicht in der Preisliste enthaltene Sprachen oder fehlende Mengenangaben werden als "
+            "nicht bewertet ausgewiesen.\n"
+            "- Die Auswertung zeigt theoretisch vermiedene Agenturkosten; interne Personal- und "
+            "Gemeinkosten, Mehrwertsteuer und tatsächliche Rechnungsabweichungen sind nicht enthalten."
         )
 
 
