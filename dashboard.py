@@ -18,7 +18,7 @@ st.set_page_config(
 )
 
 BASE_DIR = Path(__file__).resolve().parent
-FILE_2026 = BASE_DIR / "Liste_Aufgabe Doku_UeM_NEU-2026(2026).csv"
+FILE_2026 = BASE_DIR / "Liste_Aufgabe Doku_UeM_NEU-2026.xlsx"
 FILE_2026_COMPARISON = BASE_DIR / "Liste_Aufgabe Doku_UeM_NEU-2026.xlsx"
 FILE_2026_COMPARISON_LEGACY = BASE_DIR / "Liste_Aufgabe 2026 fuer KPis.xlsx"
 FILE_2025 = BASE_DIR / "Liste_Aufgabe 2025 fuer KPis.xlsx"
@@ -255,12 +255,22 @@ def normalize_orders(df: pd.DataFrame, year: str) -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def load_orders_2026() -> pd.DataFrame:
-    # Die korrigierte 2026-Quelle ist eine CP1252-CSV-Datei.
-    df = pd.read_csv(FILE_2026, encoding="cp1252")
+    # Die aktuelle 2026-Quelle ist die Excel-Datei mit dem Blatt "2026".
+    df = pd.read_excel(FILE_2026, sheet_name="2026", header=0)
     df = clean_columns(df)
+    df = df.rename(
+        columns={
+            "Spalte1": "Auftragsname",
+            "Übersetzung": "Translator",
+            "Verantwortlich": "Verantwörtlich",
+        }
+    )
     # Vollständig leere Zeilen sind keine Aufträge und werden nicht gezählt.
     df = df.dropna(how="all").copy()
-    return normalize_orders(df, "2026")
+    normalized = normalize_orders(df, "2026")
+    # Das Blatt kann historische Korrekturzeilen enthalten; der 2026-Vergleich
+    # berücksichtigt ausschließlich tatsächliche Eingangsdaten aus 2026.
+    return normalized[normalized["Eingang"].dt.year == 2026].copy()
 
 
 INTERNAL_TRANSLATORS = {
@@ -1000,6 +1010,9 @@ elif seite == "📈 Jahresvergleich 2025 vs 2026":
     st.caption(
         f"2026 ist ein laufendes Jahr; Vergleich bitte nur für gleiche Zeiträume interpretieren. "
         f"Aktualisiert: {datetime.now():%d.%m.%Y %H:%M}"
+    )
+    st.caption(
+        f"Datenquellen: 2025 = {FILE_2025.name} | 2026 = {FILE_2026.name}"
     )
 
     max_2025 = df_2025["Eingang"].max()
