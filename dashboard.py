@@ -43,6 +43,37 @@ LANGUAGES_2025 = ["EN", "IT", "ES", "NL", "PL", "PT", "CZ", "SL"]
 LANGUAGES_2026 = LANGUAGES_2025 + ["SV", "FI", "NW", "DA", "GR"]
 COMPARISON_LANGUAGES = ["PL", "IT", "NL"]
 
+# Einheitliche Sprachcodes für die Darstellung im Dashboard.
+# Die Rohdaten bleiben unverändert; nur die Auswertung verwendet diese Standardwerte.
+LANGUAGE_DISPLAY_MAP = {
+    "DK": "DA",
+    "DAN": "DA",
+    "NW": "NO",
+    "NOR": "NO",
+    "GR": "EL",
+    "GRE": "EL",
+    "ELL": "EL",
+    "SI": "SL",
+    "SLV": "SL",
+    "SW": "SV",
+    "SWE": "SV",
+    "EN-GB": "EN",
+    "EN-UK": "EN",
+    "EN-US": "EN",
+    "ENG": "EN",
+    "DEU": "DE",
+    "GER": "DE",
+    "FRA": "FR",
+    "FRE": "FR",
+    "ITA": "IT",
+    "NLD": "NL",
+    "POL": "PL",
+    "POR": "PT",
+    "CES": "CZ",
+    "FIN": "FI",
+    "ALLE": pd.NA,
+}
+
 
 # ============================================================
 # HILFSFUNKTIONEN
@@ -55,6 +86,12 @@ def clean_columns(df: pd.DataFrame) -> pd.DataFrame:
         .str.strip()
     )
     return df
+
+
+def normalize_language_values(series: pd.Series) -> pd.Series:
+    """Vereinheitlicht unterschiedliche Sprachcodes für alle Dashboard-Auswertungen."""
+    values = series.astype("string").str.strip().str.upper()
+    return values.replace(LANGUAGE_DISPLAY_MAP)
 
 
 def ensure_columns(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
@@ -172,6 +209,10 @@ def normalize_orders(df: pd.DataFrame, year: str) -> pd.DataFrame:
     ]:
         if column in df.columns:
             df[column] = df[column].astype("string").str.strip()
+
+    # Unterschiedliche Rohbezeichnungen werden für die Darstellung vereinheitlicht.
+    df["Sprache"] = normalize_language_values(df["Sprache"])
+
     # Zentrale Kanalnormalisierung direkt nach dem String-Cleanup.
     # Alle rein numerischen Werte - auch Werte, die pandas als Zahl einliest -
     # werden zuverlässig unter "jazz" zusammengefasst.
@@ -363,7 +404,7 @@ def load_comparison_orders_2026() -> pd.DataFrame:
 
     df["Translator_Typ"] = df["Translator_Roh"].map(classify_translator)
     df["Übersetzer_Anzeige"] = df["Translator_Roh"]
-    df["Sprache_Roh"] = df["Sprache"].astype("string").str.strip().str.upper()
+    df["Sprache_Roh"] = normalize_language_values(df["Sprache"])
     df["Sprache_Bewertung"] = df["Sprache_Roh"].replace(LANGUAGE_COMPARISON_MAP)
     # DE wird für den Einsparungsvergleich vollständig ausgeschlossen.
     df = df.loc[df["Sprache_Roh"].ne("DE")].copy()
